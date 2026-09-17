@@ -177,4 +177,4 @@ SecondX, disk dolmasını engellemek amacıyla dahili bir otomatik temizleme mek
 ## 👨‍💻 Yazar
 
 - **İlhan Koçaslan** — [GitHub: @Proaiml](https://github.com/Proaiml)
-- **BNB Smart Chain (BEP20) Cüzdan:** `0x89943b0a0f43fc6cd3ce9a8c19718485dcaf0bb7`
+
