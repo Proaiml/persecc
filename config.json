@@ -1,0 +1,5 @@
+{
+  "wait_time": 1,
+  "description": "Sampling interval in seconds for second-level accuracy infrastructure monitoring",
+  "log_retention_days": 14
+}

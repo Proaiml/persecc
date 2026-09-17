@@ -1,0 +1,14 @@
+[Unit]
+Description=SecondX High-Precision Infrastructure Telemetry Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/secondx
+ExecStart=/usr/bin/python3 /opt/secondx/SecondX.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

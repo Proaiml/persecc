@@ -1,0 +1,2 @@
+psutil>=5.8.0
+influxdb-client>=1.30.0
