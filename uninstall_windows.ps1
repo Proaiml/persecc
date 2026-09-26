@@ -14,6 +14,9 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Write-Host "Scheduled task '$TaskName' not found."
 }
 if ($RemoveToken) {
+    $tokenFile = [Environment]::GetEnvironmentVariable("SECONDX_INFLUX_TOKEN_FILE", "Machine")
+    if ($tokenFile -and (Test-Path $tokenFile)) { Remove-Item $tokenFile -Force }
+    [Environment]::SetEnvironmentVariable("SECONDX_INFLUX_TOKEN_FILE", $null, "Machine")
     [Environment]::SetEnvironmentVariable("SECONDX_INFLUX_TOKEN", $null, "Machine")
-    Write-Host "SECONDX_INFLUX_TOKEN removed."
+    Write-Host "InfluxDB token removed."
 }

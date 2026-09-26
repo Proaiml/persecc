@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.3.0 - 2026-09-26
+
+Easy, trustworthy installation for organisations.
+
+### Added
+- **`SecondX-Setup.exe`** (GitHub Releases): one-file Windows installer, no Python needed. Shows what it will do, asks for the InfluxDB settings, tests the connection, installs to `Program Files` / `ProgramData`, registers the Scheduled Task and an "Apps & features" entry, then verifies from the log that the agent runs. Upgrades keep the settings; `--quiet` for mass deployment (GPO, SCCM, Intune); `--uninstall` removes everything. Built reproducibly from source with `packaging/windows/build.ps1` in a clean virtual environment; `SHA256SUMS.txt` is published with it.
+- `influx.token_file` / `SECONDX_INFLUX_TOKEN_FILE`: read the token from a file that only SYSTEM and Administrators (or root) can open.
+- Single-instance lock (`secondx.lock`): a second agent with the same config exits immediately (code 2) instead of doubling every point.
+- The agent runs as a frozen `SecondX.exe`, including the supervisor.
+- README: trust summary for organisations and an event / risk table with estimated probabilities, data-retention percentages and an expected-completeness calculation.
+
+### Changed
+- `install_windows.ps1` stores the token in a protected `secondx.token` file instead of the machine-wide `SECONDX_INFLUX_TOKEN` variable that every local user can read (the old variable is removed).
+
 ## 2.2.0 - 2026-09-26
 
 Faster, safer export: live data first, parallel catch-up, and a sender that is watched every second.

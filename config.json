@@ -33,6 +33,7 @@
     "enabled": true,
     "url": "http://localhost:8086",
     "token": "",
+    "token_file": "",
     "org": "secondx",
     "bucket": "secondx",
     "timeout_ms": 5000,

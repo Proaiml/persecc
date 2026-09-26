@@ -590,6 +590,27 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(sx.influx_configured(cfg))
         self.assertTrue(any("wait_time" in n for n in notes))
 
+    def test_token_file_is_read_relative_to_config(self):
+        (self.dir / "secondx.token").write_text("s3cr3t-token\n", encoding="utf-8")
+        (self.dir / "config.json").write_text(json.dumps({"influx": {"token_file": "secondx.token"}}))
+        cfg, _ = sx.load_config(self.dir / "config.json")
+        self.assertEqual("s3cr3t-token", cfg["influx"]["token"])
+        self.assertTrue(sx.influx_configured(cfg))
+
+    def test_missing_token_file_is_a_config_error(self):
+        (self.dir / "config.json").write_text(json.dumps({"influx": {"token_file": "nope.token"}}))
+        with self.assertRaises(sx.ConfigError):
+            sx.load_config(self.dir / "config.json")
+
+    def test_only_one_agent_per_config(self):
+        first = sx.InstanceLock(self.dir / "secondx.lock")
+        second = sx.InstanceLock(self.dir / "secondx.lock")
+        self.assertTrue(first.acquire())
+        self.assertFalse(second.acquire())                 # a second copy is refused
+        first.release()
+        self.assertTrue(second.acquire())                  # free again once the first one ends
+        second.release()
+
     def test_placeholder_token_means_local_mode(self):
         (self.dir / "token.json").write_text(json.dumps({"token": "YOUR_INFLUXDB_TOKEN"}))
         cfg, _ = sx.load_config(self.dir / "config.json")

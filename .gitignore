@@ -17,6 +17,13 @@ spool/
 .env
 token.json
 secondx.env
+*.token
+
+# Build output (release files are published as GitHub Release assets, not committed)
+build/
+dist/
+*.spec
+secondx.lock
 
 # IDEs / OS
 .idea/

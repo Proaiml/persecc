@@ -33,11 +33,19 @@ if (-not (Test-Path $venvPy)) {
 & $venvPy -m pip install --disable-pip-version-check -q -r (Join-Path $InstallDir "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "pip install failed (check internet / proxy settings)." }
 
-# 3) Token as a machine-level environment variable (kept out of config.json)
+# 3) Token in a file only SYSTEM and Administrators can open (kept out of config.json and out of
+#    machine environment variables, which every local user can read). SIDs work on every Windows language.
 if ($InfluxToken) {
-    [Environment]::SetEnvironmentVariable("SECONDX_INFLUX_TOKEN", $InfluxToken, "Machine")
-    $env:SECONDX_INFLUX_TOKEN = $InfluxToken
-    Write-Host "InfluxDB token saved to machine environment variable SECONDX_INFLUX_TOKEN."
+    $tokenFile = Join-Path $InstallDir "secondx.token"
+    Set-Content -Path $tokenFile -Value $InfluxToken -NoNewline -Encoding ASCII
+    & icacls $tokenFile /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to $tokenFile" }
+    [Environment]::SetEnvironmentVariable("SECONDX_INFLUX_TOKEN_FILE", $tokenFile, "Machine")
+    $env:SECONDX_INFLUX_TOKEN_FILE = $tokenFile
+    if ([Environment]::GetEnvironmentVariable("SECONDX_INFLUX_TOKEN", "Machine")) {
+        [Environment]::SetEnvironmentVariable("SECONDX_INFLUX_TOKEN", $null, "Machine")   # from SecondX <= 2.2
+    }
+    Write-Host "InfluxDB token saved to $tokenFile (readable by SYSTEM and Administrators only)."
 }
 
 # 4) Validate configuration before registering

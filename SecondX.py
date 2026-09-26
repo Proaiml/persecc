@@ -46,8 +46,9 @@ import influx_exporter as ife
 import lissozis as ls
 from collector import Collector, Sample, hostname
 
-__version__ = "2.2.0"
-BASE_DIR = Path(__file__).resolve().parent
+__version__ = "2.3.0"
+FROZEN = bool(getattr(sys, "frozen", False))          # SecondX.exe (PyInstaller), no Python needed
+BASE_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 log = logging.getLogger("secondx")
 
 EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_RESOURCE, EXIT_EXPORT, EXIT_PRECISION = 0, 1, 2, 3, 4, 5
@@ -86,6 +87,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,
         "url": "http://localhost:8086",
         "token": "",
+        "token_file": "",
         "org": "secondx",
         "bucket": "secondx",
         "timeout_ms": 5000,
@@ -108,6 +110,7 @@ PLACEHOLDER_TOKENS = {"", "YOUR_INFLUXDB_TOKEN", "YOUR_INFLUXDB_API_TOKEN", "CHA
 ENV_OVERRIDES = {
     "SECONDX_INFLUX_URL": ("influx", "url"),
     "SECONDX_INFLUX_TOKEN": ("influx", "token"),
+    "SECONDX_INFLUX_TOKEN_FILE": ("influx", "token_file"),
     "SECONDX_INFLUX_ORG": ("influx", "org"),
     "SECONDX_INFLUX_BUCKET": ("influx", "bucket"),
     "SECONDX_HOST": ("host",),
@@ -216,6 +219,14 @@ def load_config(path: Path) -> tuple[dict[str, Any], list[str]]:
     for ok, message in checks:
         if not ok:
             raise ConfigError(f"config: {message}")
+    token_file = str(cfg["influx"].get("token_file") or "")
+    if token_file and str(cfg["influx"].get("token", "")) in PLACEHOLDER_TOKENS:
+        # A file only SYSTEM/Administrators (or root) can read keeps the secret out of the
+        # config and out of machine-wide environment variables that every user can read.
+        try:
+            cfg["influx"]["token"] = _resolve(path.parent, token_file).read_text(encoding="utf-8-sig").strip()
+        except OSError as exc:
+            raise ConfigError(f"config: influx.token_file cannot be read ({exc})") from exc
     cfg["strict_mode"] = bool(cfg.get("strict_mode", True))
     cfg["host"] = str(cfg.get("host") or hostname())
     return cfg, notes
@@ -229,6 +240,42 @@ def influx_configured(cfg: dict[str, Any]) -> bool:
 def _resolve(base: Path, value: str) -> Path:
     path = Path(value)
     return path if path.is_absolute() else base / path
+
+
+class InstanceLock:
+    """Only one agent per config: a second copy (e.g. started by hand next to the
+    service) would double every point and share the spool. The OS releases the
+    lock automatically when the process ends, even after a crash."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._file = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(self.path, "a+")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            return False
+        f.seek(0)
+        f.truncate()
+        f.write(str(os.getpid()))
+        f.flush()
+        self._file = f
+        return True
+
+    def release(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
 
 
 # ---------------------------------------------------------------- logging
@@ -644,18 +691,26 @@ def main(argv: list[str] | None = None) -> int:
         setup_logging(cfg, config_path.parent, args.verbose, filename="secondx-supervisor.log")
         stop = threading.Event()
         _install_signal_handlers(stop)
-        child = [sys.executable, str(Path(__file__).resolve()), "--config", str(config_path)]
+        child = ([sys.executable] if FROZEN else [sys.executable, str(Path(__file__).resolve())]) + \
+            ["--config", str(config_path)]
         if args.dry_run:
             child.append("--dry-run")
         if args.verbose:
             child.append("--verbose")
         return supervise(child, cfg["restart"], stop)
     setup_logging(cfg, config_path.parent, args.verbose)
+    lock = InstanceLock(config_path.parent / "secondx.lock")
+    if not lock.acquire():
+        log.critical("STOPPING: another SecondX agent is already running with %s (exit code %d = %s).",
+                     config_path, EXIT_CONFIG, EXIT_MEANING[EXIT_CONFIG])
+        return EXIT_CONFIG
     try:
         return run_agent(cfg, notes, args.dry_run, config_path.parent)
     except Exception:  # noqa: BLE001 - services have no console: make the reason visible in the log
         log.exception("SecondX stopped because of an unexpected error.")
         return EXIT_ERROR
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":
