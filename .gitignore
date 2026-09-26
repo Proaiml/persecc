@@ -2,20 +2,24 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Daily Logs (Keep config.json and token.json)
-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json
-*.log
-
-# Environments
+.venv/
 venv/
 env/
 
-# IDEs
+# Runtime output (never commit)
+logs/
+data/
+*.log
+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json
+
+# Secrets (never commit)
+.env
+token.json
+secondx.env
+
+# IDEs / OS
 .idea/
 .vscode/
-
-# OS
 Thumbs.db
 Desktop.ini
 .DS_Store

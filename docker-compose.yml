@@ -1,5 +1,7 @@
-version: '3.8'
-
+# InfluxDB 2 + Grafana with the SecondX datasource and dashboard pre-provisioned.
+#   1) cp .env.example .env   (and edit the passwords / token)
+#   2) docker compose up -d
+#   3) Grafana: http://localhost:3000  ->  Dashboards > SecondX > SecondX - Host Overview
 services:
   influxdb:
     image: influxdb:2.7
@@ -7,28 +9,43 @@ services:
     ports:
       - "8086:8086"
     environment:
-      - DOCKER_INFLUXDB_INIT_MODE=setup
-      - DOCKER_INFLUXDB_INIT_USERNAME=admin
-      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword123
-      - DOCKER_INFLUXDB_INIT_ORG=H
-      - DOCKER_INFLUXDB_INIT_BUCKET=SeconX
-      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=my-super-secret-auth-token-123
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_ADMIN_USER:?set in .env}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_ADMIN_PASSWORD:?set in .env}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:-secondx}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET:-secondx}
+      DOCKER_INFLUXDB_INIT_RETENTION: ${INFLUXDB_RETENTION:-30d}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN:?set in .env}
     volumes:
       - influxdb_data:/var/lib/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.2.0
     container_name: secondx_grafana
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    depends_on:
-      - influxdb
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/secondx.json
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-secondx}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-secondx}
+      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN:?set in .env}
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      influxdb:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

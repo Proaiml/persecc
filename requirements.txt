@@ -1,2 +1,2 @@
-psutil>=5.8.0
-influxdb-client>=1.30.0
+psutil>=5.9.0
+influxdb-client>=1.36.0

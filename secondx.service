@@ -1,14 +1,34 @@
 [Unit]
 Description=SecondX High-Precision Infrastructure Telemetry Agent
-After=network.target
+Documentation=https://github.com/Proaiml/persecc
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=secondx
+Group=secondx
 WorkingDirectory=/opt/secondx
-ExecStart=/usr/bin/python3 /opt/secondx/SecondX.py
+# SECONDX_INFLUX_TOKEN, SECONDX_INFLUX_URL ... (keeps the secret out of config.json)
+EnvironmentFile=-/etc/secondx/secondx.env
+Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ExecStart=/opt/secondx/venv/bin/python /opt/secondx/SecondX.py --config /opt/secondx/config.json
 Restart=always
 RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Read /proc/<pid>/io of every process without running as root
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/secondx/logs /opt/secondx/data
+Nice=5
 
 [Install]
 WantedBy=multi-user.target
