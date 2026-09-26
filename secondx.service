@@ -3,6 +3,9 @@ Description=SecondX High-Precision Infrastructure Telemetry Agent
 Documentation=https://github.com/Proaiml/persecc
 After=network-online.target
 Wants=network-online.target
+# Restart policy: at most 5 restarts (+ the first start) within 2 hours, then stay stopped.
+StartLimitIntervalSec=7200
+StartLimitBurst=6
 
 [Service]
 Type=simple
@@ -13,10 +16,19 @@ WorkingDirectory=/opt/secondx
 EnvironmentFile=-/etc/secondx/secondx.env
 Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 ExecStart=/opt/secondx/venv/bin/python /opt/secondx/SecondX.py --config /opt/secondx/config.json
-Restart=always
-RestartSec=3
+
+# Errors (exit 1) and lost precision (exit 5) are retried every 5 minutes.
+# Config error (2), own CPU/RAM limit exceeded (3) and export safety limit (4)
+# are NEVER restarted automatically: an administrator must look first.
+Restart=on-failure
+RestartSec=300
+RestartPreventExitStatus=2 3 4
 KillSignal=SIGTERM
 TimeoutStopSec=15
+
+# Kernel-enforced backstop above the agent's own limits (config.json "limits").
+MemoryMax=400M
+CPUQuota=50%
 
 # Read /proc/<pid>/io of every process without running as root
 AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
@@ -27,7 +39,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/opt/secondx/logs /opt/secondx/data
+ReadWritePaths=/opt/secondx/logs /opt/secondx/data /opt/secondx/spool
 Nice=5
 
 [Install]

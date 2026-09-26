@@ -76,25 +76,103 @@ class FlakySink:
         pass
 
 
-class ExporterTest(unittest.TestCase):
-    def test_outage_keeps_order_and_data(self):
-        sink = FlakySink(fail_times=2)
-        exp = ife.Exporter(sink)
-        for i in range(5):
-            exp.submit([{"measurement": "m", "tags": {}, "fields": {"i": i}, "time_ns": i}])
-        end = time.time() + 10
-        while len(sink.received) < 5 and time.time() < end:
-            time.sleep(0.05)
-        exp.close(timeout=1)
-        self.assertEqual([0, 1, 2, 3, 4], [p["fields"]["i"] for p in sink.received])
-        self.assertEqual(0, exp.dropped)
+def pts(start, n):
+    return [{"measurement": "m", "tags": {}, "fields": {"i": float(i)}, "time_ns": i} for i in range(start, start + n)]
 
-    def test_buffer_limit_drops_oldest(self):
-        sink = FlakySink(fail_times=10**6)
-        exp = ife.Exporter(sink, max_buffer_points=1000)
-        exp.submit([{"measurement": "m", "tags": {}, "fields": {"i": i}, "time_ns": i} for i in range(1500)])
-        self.assertEqual(1000, exp.pending)
-        self.assertEqual(500, exp.dropped)
+
+def wait_until(cond, timeout=10.0):
+    end = time.time() + timeout
+    while not cond() and time.time() < end:
+        time.sleep(0.05)
+    return cond()
+
+
+class SwitchSink(FlakySink):
+    """Fails while ``down`` is True."""
+
+    def __init__(self):
+        super().__init__(0)
+        self.down = False
+
+    def write(self, points):
+        if self.down:
+            raise ConnectionError("influx down")
+        self.received.extend(points)
+
+
+class ExporterTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.spool = Path(self.tmp.name) / "spool"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_short_outage_keeps_all_data(self):
+        sink = FlakySink(fail_times=2)
+        exp = ife.Exporter(sink, backlog_min_pause_seconds=0)
+        for i in range(5):
+            exp.submit(pts(i, 1))
+        self.assertTrue(wait_until(lambda: len(sink.received) == 5))
+        exp.close(timeout=1)
+        self.assertEqual([0, 1, 2, 3, 4], sorted(int(p["fields"]["i"]) for p in sink.received))
+        self.assertIsNone(exp.fatal_reason)
+
+    def test_long_outage_spools_blocks_to_disk_and_keeps_ram_small(self):
+        sink = SwitchSink()
+        sink.down = True
+        exp = ife.Exporter(sink, max_memory_points=2000, spool_dir=self.spool, spool_block_points=100,
+                           backlog_min_pause_seconds=0, min_free_disk_bytes=0)
+        for k in range(30):                           # 30 "seconds" x 50 points
+            exp.submit(pts(k * 50, 50))
+        self.assertTrue(wait_until(lambda: len(list(self.spool.glob("block-*.jsonl"))) >= 10))
+        self.assertLess(exp.pending, 200)                 # RAM stays bounded
+        sink.down = False
+        exp._wake.set()
+        self.assertTrue(wait_until(lambda: len(sink.received) == 1500))
+        self.assertEqual([], list(self.spool.glob("block-*.jsonl")))
+        exp.close(timeout=1)
+        self.assertEqual(list(range(1500)), sorted(int(p["fields"]["i"]) for p in sink.received))
+        self.assertIsNone(exp.fatal_reason)
+
+    def test_unsent_points_survive_restart_via_spool(self):
+        sink = SwitchSink()
+        sink.down = True
+        exp = ife.Exporter(sink, spool_dir=self.spool, min_free_disk_bytes=0)
+        exp.submit(pts(0, 250))
+        exp.close(timeout=0.5)                             # "service stopped" during outage
+        self.assertTrue(list(self.spool.glob("block-*.jsonl")))
+        sink2 = SwitchSink()
+        exp2 = ife.Exporter(sink2, spool_dir=self.spool, backlog_min_pause_seconds=0, min_free_disk_bytes=0)
+        self.assertTrue(wait_until(lambda: len(sink2.received) == 250))
+        exp2.close(timeout=1)
+
+    def test_outage_longer_than_limit_is_fatal(self):
+        sink = SwitchSink()
+        sink.down = True
+        exp = ife.Exporter(sink, spool_dir=self.spool, max_outage_seconds=0.5, min_free_disk_bytes=0)
+        exp.submit(pts(0, 10))
+        self.assertTrue(wait_until(lambda: exp.fatal_reason is not None, timeout=5))
+        self.assertIn("unreachable", exp.fatal_reason)
+        exp.close(timeout=0.2)
+
+    def test_spool_size_limit_is_fatal(self):
+        sink = SwitchSink()
+        sink.down = True
+        exp = ife.Exporter(sink, spool_dir=self.spool, spool_block_points=100, max_spool_bytes=2000,
+                           min_free_disk_bytes=0)
+        exp.submit(pts(0, 500))
+        self.assertTrue(wait_until(lambda: exp.fatal_reason is not None, timeout=5))
+        self.assertIn("spool size", exp.fatal_reason)
+        exp.close(timeout=0.2)
+
+    def test_full_ram_buffer_is_fatal_instead_of_dropping(self):
+        sink = SwitchSink()
+        sink.down = True
+        exp = ife.Exporter(sink, max_memory_points=1000)       # no spool configured
+        exp.submit(pts(0, 1500))
+        self.assertIn("RAM buffer full", exp.fatal_reason)
+        self.assertEqual(1500, exp.pending)                    # nothing silently dropped
         exp.close(timeout=0.2)
 
     def test_submit_never_blocks_while_sink_hangs(self):
@@ -107,8 +185,8 @@ class ExporterTest(unittest.TestCase):
 
         exp = ife.Exporter(Hanging(0))
         t = time.perf_counter()
-        for _ in range(200):
-            exp.submit([{"measurement": "m", "tags": {}, "fields": {"v": 1}, "time_ns": 1}])
+        for i in range(200):
+            exp.submit(pts(i, 1))
         self.assertLess(time.perf_counter() - t, 0.5)
         gate.set()
         exp.close(timeout=2)
@@ -124,6 +202,167 @@ class ExporterTest(unittest.TestCase):
             ife.set_default_exporter(None)
             exp.close(timeout=2)
         self.assertEqual({"EX134cpu": 7.0}, sink.received[0]["fields"])
+
+
+class FakeProc:
+    def __init__(self, rss_mb=50.0, cpu_rate=0.01):
+        self.rss_mb = rss_mb
+        self.cpu_rate = cpu_rate          # CPU seconds consumed per wall second
+        self.cpu_s = 0.0
+
+    def memory_info(self):
+        return SimpleNamespace(rss=self.rss_mb * 2**20)
+
+    def cpu_times(self):
+        return SimpleNamespace(user=self.cpu_s, system=0.0)
+
+
+LIMITS = {"max_cpu_percent": 25.0, "max_memory_mb": 200, "cpu_window_seconds": 3}
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def tick(guard, proc, clock, seconds=1.0):
+    clock.t += seconds
+    proc.cpu_s += proc.cpu_rate * seconds
+    guard.check()
+
+
+class GuardTest(unittest.TestCase):
+    def test_memory_breach_stops_immediately_even_during_warmup(self):
+        proc, clock = FakeProc(), Clock()
+        g = sx.ResourceGuard(LIMITS, 1.0, proc, clock)
+        tick(g, proc, clock)
+        proc.rss_mb = 201
+        with self.assertRaises(sx.StopAgent) as ctx:
+            tick(g, proc, clock)
+        self.assertEqual(sx.EXIT_RESOURCE, ctx.exception.code)
+
+    def test_startup_burst_is_ignored_but_steady_overuse_stops(self):
+        proc, clock = FakeProc(cpu_rate=0.9), Clock()      # 90% of a core during start-up
+        g = sx.ResourceGuard(LIMITS, 1.0, proc, clock)
+        for _ in range(4):
+            tick(g, proc, clock)                           # warm-up: no stop
+        proc.cpu_rate = 0.05
+        for _ in range(10):
+            tick(g, proc, clock)                           # 5% steady: fine
+        proc.cpu_rate = 0.6
+        with self.assertRaises(sx.StopAgent) as ctx:
+            for _ in range(4):
+                tick(g, proc, clock)                       # 60% for 3 s -> stop
+        self.assertIn("CPU", ctx.exception.reason)
+
+    def test_short_spike_inside_window_is_tolerated(self):
+        proc, clock = FakeProc(cpu_rate=0.05), Clock()
+        g = sx.ResourceGuard(LIMITS, 1.0, proc, clock)
+        for _ in range(8):
+            tick(g, proc, clock)
+        proc.cpu_rate = 0.5
+        tick(g, proc, clock)                               # one 50% second: 3 s average = 20% -> fine
+        proc.cpu_rate = 0.05
+        for _ in range(5):
+            tick(g, proc, clock)
+
+    def test_precision_guard(self):
+        p = sx.PrecisionGuard({"max_missed_slots": 3, "slot_tolerance_ms": 500}, 1.0)
+        self.assertFalse(p.check(0.1, 0.05))
+        p.check(0.6, 0.05)
+        p.check(0.0, 1.2)
+        self.assertFalse(p.check(0.0, 0.05))          # recovered: counter reset
+        self.assertEqual(0, p.missed)
+        self.assertTrue(p.check(45.0, 0.05))          # clock jump: resync, no stop
+        p.check(0.7, 0.05)
+        p.check(0.8, 0.05)
+        with self.assertRaises(sx.StopAgent) as ctx:
+            p.check(0.9, 0.05)
+        self.assertEqual(sx.EXIT_PRECISION, ctx.exception.code)
+
+
+class BrokenCollector:
+    def __init__(self, fail_on=3):
+        self.n = 0
+        self.fail_on = fail_on
+
+    def sample(self):
+        self.n += 1
+        if self.n == self.fail_on:
+            raise RuntimeError("boom")
+        return collector.Sample(timestamp_ns=time.time_ns(), interval_s=None if self.n == 1 else 0.2,
+                                system={"cpu_percent": 1.0},
+                                processes={"cpu": {}, "ram": {}, "disk_read": {}, "disk_write": {}})
+
+
+class AgentTest(unittest.TestCase):
+    def cfg(self, **kw):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, _ = sx.load_config(Path(tmp) / "none.json")
+        cfg["interval_seconds"] = 0.2
+        cfg["local_output"]["enabled"] = False
+        cfg.update(kw)
+        return cfg
+
+    def run_agent(self, cfg, coll, cycles=8):
+        return sx.run_agent(cfg, [], True, Path(tempfile.gettempdir()), collector=coll,
+                            resource_guard=sx.ResourceGuard(cfg["limits"], cfg["interval_seconds"], FakeProc(), Clock()),
+                            max_cycles=cycles)
+
+    def test_strict_mode_stops_on_first_error(self):
+        coll = BrokenCollector(fail_on=3)
+        self.assertEqual(sx.EXIT_ERROR, self.run_agent(self.cfg(), coll))
+        self.assertEqual(3, coll.n)
+
+    def test_non_strict_mode_continues(self):
+        coll = BrokenCollector(fail_on=3)
+        self.assertEqual(sx.EXIT_OK, self.run_agent(self.cfg(strict_mode=False), coll, cycles=6))
+        self.assertEqual(6, coll.n)
+
+    def test_resource_breach_stops_agent(self):
+        cfg = self.cfg()
+        proc = FakeProc(rss_mb=500)
+        code = sx.run_agent(cfg, [], True, Path(tempfile.gettempdir()), collector=BrokenCollector(fail_on=99),
+                            resource_guard=sx.ResourceGuard(cfg["limits"], 0.2, proc, Clock()), max_cycles=5)
+        self.assertEqual(sx.EXIT_RESOURCE, code)
+
+    def test_export_safety_limit_stops_agent_even_when_not_strict(self):
+        exp = SimpleNamespace(fatal_reason=None, written=0, pending=0, spooled=0, close=lambda timeout: None)
+        exp.submit = lambda points: setattr(exp, "fatal_reason", "RAM buffer full")
+        cfg = self.cfg(strict_mode=False)
+        with mock.patch.object(sx, "make_exporter", return_value=exp):
+            code = sx.run_agent(cfg, [], False, Path(tempfile.gettempdir()), collector=BrokenCollector(fail_on=99),
+                                resource_guard=sx.ResourceGuard(cfg["limits"], 0.2, FakeProc(), Clock()),
+                                max_cycles=5)
+        self.assertEqual(sx.EXIT_EXPORT, code)
+
+
+class SupervisorTest(unittest.TestCase):
+    POLICY = {"max_attempts": 5, "delay_seconds": 300, "reset_after_seconds": 3600}
+
+    def child(self, code):
+        return [sys.executable, "-c", f"import sys; sys.exit({code})"]
+
+    def test_restartable_error_is_retried_five_times_then_gives_up(self):
+        waits = []
+        code = sx.supervise(self.child(1), self.POLICY, sleep=lambda s: waits.append(s) or False)
+        self.assertEqual(1, code)
+        self.assertEqual([300.0] * 5, waits)               # 5 restarts, 5 minutes apart
+
+    def test_resource_limit_is_never_restarted(self):
+        waits = []
+        self.assertEqual(sx.EXIT_RESOURCE, sx.supervise(self.child(3), self.POLICY,
+                                                        sleep=lambda s: waits.append(s) or False))
+        self.assertEqual([], waits)
+
+    def test_config_and_export_limits_are_never_restarted(self):
+        for c in (sx.EXIT_CONFIG, sx.EXIT_EXPORT, sx.EXIT_OK):
+            waits = []
+            self.assertEqual(c, sx.supervise(self.child(c), self.POLICY, sleep=lambda s: waits.append(s) or False))
+            self.assertEqual([], waits)
 
 
 class ConfigTest(unittest.TestCase):

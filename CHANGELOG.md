@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.1.0 - 2026-09-26
+
+Strict mode: the agent either runs with second-level precision without disturbing the host, or stops immediately. Built for critical servers.
+
+### Added
+- **Strict mode** (`strict_mode`, default on) with explicit exit codes: 0 stopped, 1 error, 2 config, 3 own CPU/RAM limit, 4 export safety limit, 5 precision lost.
+- **Own resource limits** (`limits`): RSS checked every sample and stops on the first breach; CPU averaged over a short window (`cpu_window_seconds`) after a 5 s start-up warm-up.
+- **Precision guard** (`precision`): stops after `max_missed_slots` consecutive late samples; clock jumps (> 30 s) resync instead of stopping.
+- **Disk spool for InfluxDB outages:** a separate thread writes the oldest points to `spool/` in fixed-size JSONL blocks (fsync + atomic rename), so RAM stays bounded during long outages. Spooled blocks survive restarts and are exported first, with their original timestamps.
+- **Export safety limits:** `max_outage_hours`, `max_spool_mb`, `min_free_disk_mb`; a full RAM buffer now stops the agent instead of dropping data.
+- **Backlog pacing** (`backlog_cpu_percent`): catch-up after an outage is paced by the sender thread's own CPU time.
+- **Supervisor** (`--supervise`, used by the Windows task): restarts on codes 1 and 5 at most `restart.max_attempts` times, `delay_seconds` apart; never restarts on 0, 2, 3, 4. The agent exits by itself if the supervisor is killed.
+- systemd unit: `Restart=on-failure`, `RestartSec=300`, start limit, `RestartPreventExitStatus=2 3 4`, and kernel backstops `MemoryMax=400M`, `CPUQuota=50%`.
+
+### Changed
+- `influx.max_buffer_points` is replaced by `influx.max_memory_points` (old key still accepted). Points are never silently dropped any more.
+- Status line reports missed slots and spooled points.
+
 ## 2.0.0 - 2026-09-26
 
 Complete overhaul for reliable second-level monitoring and easy enterprise deployment.

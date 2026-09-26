@@ -20,7 +20,7 @@ python3 -c 'import ensurepip, venv' 2>/dev/null || { echo "python3-venv is requi
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 id secondx &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin secondx
-install -d -o secondx -g secondx "$PREFIX" "$PREFIX/logs" "$PREFIX/data"
+install -d -o secondx -g secondx "$PREFIX" "$PREFIX/logs" "$PREFIX/data" "$PREFIX/spool"
 install -m 644 "$SRC/SecondX.py" "$SRC/collector.py" "$SRC/lissozis.py" "$SRC/influx_exporter.py" \
                "$SRC/win_snapshot.py" "$SRC/requirements.txt" "$PREFIX/"
 [[ -f "$PREFIX/config.json" ]] || install -m 644 "$SRC/config.json" "$PREFIX/config.json"

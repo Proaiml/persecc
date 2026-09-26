@@ -44,13 +44,15 @@ if ($InfluxToken) {
 & $venvPy (Join-Path $InstallDir "SecondX.py") --config (Join-Path $InstallDir "config.json") --check
 if ($LASTEXITCODE -ne 0) { Write-Warning "Config check reported a problem (see above). The service is installed anyway and keeps retrying." }
 
-# 5) Scheduled task: start at boot, run as SYSTEM, restart on failure, no time limit
-$arguments = '"{0}" --config "{1}"' -f (Join-Path $InstallDir "SecondX.py"), (Join-Path $InstallDir "config.json")
+# 5) Scheduled task: start at boot as SYSTEM, no time limit. The built-in supervisor
+#    (--supervise) applies the restart policy from config.json "restart":
+#    errors are retried every 5 minutes (max 5), while an exceeded own CPU/RAM limit,
+#    a config error or an export safety limit stops the agent for good.
+$arguments = '"{0}" --supervise --config "{1}"' -f (Join-Path $InstallDir "SecondX.py"), (Join-Path $InstallDir "config.json")
 $action   = New-ScheduledTaskAction -Execute $venvPy -Argument $arguments -WorkingDirectory $InstallDir
 $trigger  = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
-            -StartWhenAvailable -MultipleInstances IgnoreNew
+            -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -MultipleInstances IgnoreNew
 $system   = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $system -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
@@ -58,5 +60,5 @@ Start-ScheduledTask -TaskName $TaskName
 Write-Host ""
 Write-Host "SecondX installed and started as scheduled task '$TaskName'."
 Write-Host "  Status : Get-ScheduledTask -TaskName $TaskName | Get-ScheduledTaskInfo"
-Write-Host "  Logs   : $InstallDir\logs\secondx.log"
+Write-Host "  Logs   : $InstallDir\logs\secondx.log  (supervisor: secondx-supervisor.log)"
 Write-Host "  Remove : powershell -ExecutionPolicy Bypass -File .\uninstall_windows.ps1"

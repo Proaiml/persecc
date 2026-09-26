@@ -10,6 +10,8 @@
 
 > Geleneksel izleme araçları (CloudWatch, Datadog, varsayılan Prometheus döngüleri) metrikleri **1-5 dakikalık** ortalamalarla toplar. Birkaç saniyelik CPU kilitlenmeleri, anlık disk patlamaları ve belleği hızla tüketen süreçler bu ortalamaların içinde kaybolur. SecondX bunları **saniyesinde ve süreç adıyla** gösterir.
 
+> 🔒 **Temel ilke: izlenen sunucuya asla yük olmamak.** SecondX kritik sunucularda (ör. banka / mobil uygulama sunucuları) çalışacak şekilde tasarlandı. Kendisine ayrılan CPU veya RAM sınırını aştığı **anda durur**. Saniyelik hassasiyeti kaybederse durur. InfluxDB uzun süre kapalı kalırsa belleği şişirmez: veriyi diske bloklar halinde yazar ve belirlenen sınırlar aşılırsa durur. Ayrıntılar: [Sıkı mod](#-sıkı-mod-kritik-sunucular-için).
+
 ---
 
 ## 📑 İçindekiler
@@ -21,6 +23,7 @@
   - [A. InfluxDB + Grafana (Docker)](#a-influxdb--grafana-tek-komutla-docker)
   - [B. Windows sunucular](#b-windows-sunucular-servis-olarak)
   - [C. Linux sunucular](#c-linux-sunucular-systemd-servisi)
+- [Sıkı mod (kritik sunucular için)](#-sıkı-mod-kritik-sunucular-için)
 - [Yapılandırma](#%EF%B8%8F-yapılandırma)
 - [Grafana panosu](#-grafana-panosu)
 - [Veri şeması](#-veri-şeması)
@@ -37,7 +40,9 @@
 | :--- | :--- |
 | ⏱️ **Gerçek saniyelik örnekleme** | Windows'ta tüm süreçler tek bir çekirdek çağrısıyla okunur: **~5 ms**. Ajan her saniye düzenli ölçer. |
 | 🔝 **En çok tüketenler** | CPU, RAM, disk okuma, disk yazma için ilk N süreç (varsayılan 6). Aynı adlı süreçler toplanır (ör. 30 × `chrome.exe` → tek satır). |
-| 🧱 **Veri kaybı yok** | InfluxDB kapansa bile ölçüm durmaz. Noktalar bellekte bekletilir ve bağlantı gelince **orijinal zaman damgalarıyla** yazılır. |
+| 🛑 **Sorun çıkarsa anında durur** | Kendi CPU/RAM sınırı, saniyelik hassasiyet ve dışa aktarım güvenlik sınırları sürekli denetlenir. Sınır aşılırsa ajan ~1 sn içinde durur ve nedeni günlüğe yazar. |
+| 🧱 **Veri kaybı yok, RAM şişmez** | InfluxDB kapansa bile ölçüm durmaz. Veri bellekte küçük bir tamponda, taşarsa **ayrı bir iş parçacığında diske bloklar halinde** bekletilir. Bağlantı gelince **orijinal zaman damgalarıyla** yazılır. |
+| 🔁 **Kontrollü yeniden başlatma** | Geçici hatalarda 5 dk arayla en fazla 5 deneme. Kaynak sınırı aşımında **asla** kendiliğinden yeniden başlamaz. |
 | 🚀 **Toplu yazım** | Her saniyenin tüm noktaları tek istekte gönderilir; ölçüm döngüsü asla ağı beklemez. |
 | 🖥️ **Çoklu sunucu** | Her nokta `host` etiketi taşır. Tüm sunucular tek bucket'ta, panoda sunucu seçiciyle izlenir. |
 | 📊 **Hazır pano** | `docker compose up -d` → Grafana'da veri kaynağı ve pano otomatik kurulu gelir. |
@@ -79,7 +84,7 @@ python SecondX.py --once
 ```
 
 ```
-SecondX 2.0.0 | host WEB-01 | interval 1.00s
+SecondX 2.1.0 | host WEB-01 | interval 1.00s
 CPU   7.6%   RAM  77.4% (24.7 GB)   Disk R/W    108.7 /    164.6 KB/s   Net out/in      0.6 /      1.1 KB/s
 
 Top cpu (%):
@@ -129,7 +134,7 @@ Betik şunları yapar:
 1. Klasörün içinde özel bir Python ortamı (`.venv`) kurar ve bağımlılıkları yükler.
 2. Token'ı makine düzeyinde `SECONDX_INFLUX_TOKEN` ortam değişkenine yazar (config dosyasına yazılmaz).
 3. `--check` ile yapılandırmayı ve InfluxDB bağlantısını doğrular.
-4. **SecondX** adlı zamanlanmış görevi oluşturur: bilgisayar açılınca SYSTEM hesabıyla başlar, çökerse 1 dakikada yeniden başlar, süre sınırı yoktur.
+4. **SecondX** adlı zamanlanmış görevi oluşturur: bilgisayar açılınca SYSTEM hesabıyla, `--supervise` (gözetmen) modunda başlar. Yeniden başlatma politikasını gözetmen uygular (bkz. [Sıkı mod](#-sıkı-mod-kritik-sunucular-için)). Süre sınırı yoktur.
 
 | İşlem | Komut |
 | :--- | :--- |
@@ -155,13 +160,85 @@ Betik şunları yapar:
 
 Servis, tüm süreçlerin disk sayaçlarını okuyabilmek için yalnızca `CAP_SYS_PTRACE` ve `CAP_DAC_READ_SEARCH` yetkilerini alır. `ProtectSystem=strict`, `ProtectHome`, `NoNewPrivileges` ve `PrivateTmp` ile sıkılaştırılmıştır.
 
+Yeniden başlatma politikasını systemd uygular: hata (1) ve hassasiyet kaybında (5) 5 dk arayla, 2 saat içinde en fazla 5 kez. Çıkış kodu 2, 3 ve 4'te **yeniden başlatmaz** (`RestartPreventExitStatus`). Ayrıca çekirdek düzeyinde ikinci bir emniyet vardır: `MemoryMax=400M`, `CPUQuota=50%`. Bunlar ajanın kendi sınırlarının (200 MB, %25) üstündedir; ajanın kendi denetimi hiç çalışmasa bile sunucu korunur.
+
 | İşlem | Komut |
 | :--- | :--- |
-| Durum | `systemctl status secondx` |
+| Durum | `systemctl status secondx` (durduysa `status=N` çıkış kodunu gösterir) |
 | Canlı günlük | `journalctl -u secondx -f` |
 | Yapılandırma | `sudo nano /opt/secondx/config.json && sudo systemctl restart secondx` |
 | Güncelleme | `git pull && sudo ./install_linux.sh` |
 | Kaldırma | `sudo systemctl disable --now secondx && sudo rm -rf /opt/secondx /etc/secondx /etc/systemd/system/secondx.service` |
+
+---
+
+## 🔒 Sıkı mod (kritik sunucular için)
+
+`strict_mode: true` varsayılandır. Amaç şudur: izleme ajanını üretim sunucusuna **korkmadan** koyabilmek. Ajan ya saniyelik hassasiyetle sorunsuz çalışır ya da **hemen durur**. Arada bir durum yoktur: yavaşlayan, belleği şişen, sunucuyu yoran bir ajan olmaz.
+
+### Anında durduran denetimler
+
+| Denetim | Varsayılan | Ne zaman durur? | Çıkış kodu |
+| :--- | :--- | :--- | :---: |
+| **Kendi RAM'i** | `limits.max_memory_mb: 200` | Her saniye ölçülür; sınır aşıldığı **ilk örnekte** | `3` |
+| **Kendi CPU'su** | `limits.max_cpu_percent: 25` (tek çekirdeğin %'si) | Son `cpu_window_seconds` (3 sn) ortalaması sınırı aşınca. İlk 5 sn (Python'un açılışı) ısınma sayılır | `3` |
+| **Saniyelik hassasiyet** | `precision.max_missed_slots: 3`, `slot_tolerance_ms: 500` | Art arda 3 örnek zamanını 500 ms'den fazla kaçırırsa. Saat atlaması (>30 sn, ör. uyku / NTP) durdurmaz, yeniden hizalar | `5` |
+| **InfluxDB kesintisi** | `influx.max_outage_hours: 6` | InfluxDB 6 saatten uzun süre yazılamazsa | `4` |
+| **Disk tamponu boyutu** | `influx.max_spool_mb: 1024` | Diskteki bekleyen veri 1 GB'ı geçerse | `4` |
+| **Boş disk alanı** | `influx.min_free_disk_mb: 1024` | Diskte 1 GB'tan az yer kalırsa (sunucunun diskini doldurmaz) | `4` |
+| **RAM tamponu** | `influx.max_memory_points: 30000` | Disk tamponu yetişemez / yazılamazsa (veri **sessizce atılmaz**) | `4` |
+| **Beklenmedik hata** | | Bir ölçüm turu hata verirse | `1` |
+
+Durunca günlüğe tek satırlık, açık bir neden yazılır:
+
+```
+CRITICAL secondx: STOPPING: own memory 212 MB exceeds limit 200 MB (exit code 3 = own CPU/RAM limit exceeded).
+```
+
+### Çıkış kodları ve yeniden başlatma
+
+| Kod | Anlamı | Yeniden başlatılır mı? |
+| :---: | :--- | :--- |
+| `0` | İstenerek durduruldu | Hayır |
+| `1` | Beklenmedik hata | **Evet**: 5 dk arayla en fazla 5 kez |
+| `2` | Yapılandırma hatası | Hayır (önce config düzeltilmeli) |
+| `3` | Kendi CPU/RAM sınırı aşıldı | **Asla**: bir yönetici bakmalı |
+| `4` | Dışa aktarım güvenlik sınırı (kesinti / disk) | **Asla**: bir yönetici bakmalı |
+| `5` | Saniyelik hassasiyet kayboldu (sunucu aşırı yüklü) | **Evet**: 5 dk arayla en fazla 5 kez |
+
+Politika `config.json` → `restart` bölümündedir: `max_attempts: 5`, `delay_seconds: 300`. Ajan `reset_after_seconds` (1 saat) boyunca sorunsuz çalışırsa deneme sayacı sıfırlanır. 5 deneme de başarısız olursa ajan kapalı kalır.
+
+- **Windows:** görev `SecondX.py --supervise` ile çalışır. Gözetmen, ajanı ayrı bir süreç olarak başlatır ve politikayı uygular. Gözetmen öldürülürse (ör. Görev Zamanlayıcı → *Sonlandır*) ajan da ~1 sn içinde kendiliğinden kapanır; sahipsiz süreç kalmaz. Gözetmen günlüğü: `logs/secondx-supervisor.log`.
+- **Linux:** aynı politikayı `secondx.service` içinde systemd uygular.
+
+### InfluxDB kesintisinde veri nasıl bekletilir?
+
+```mermaid
+flowchart LR
+    A["Ölçüm döngüsü<br/>(her 1 sn, asla beklemez)"] --> R["RAM tamponu<br/>(en fazla 30 000 nokta)"]
+    R -->|"gönderici iş parçacığı"| I[("InfluxDB")]
+    R -->|"kesintide: diske yazıcı iş parçacığı<br/>1500 noktalık bloklar"| D["spool/block-*.jsonl"]
+    D -->|"bağlantı gelince<br/>en eski blok önce"| I
+```
+
+1. Ölçüm döngüsü noktaları yalnızca RAM tamponuna ekler; ağı ya da diski **hiç** beklemez. Saniyelik ritim bu yüzden bozulmaz.
+2. InfluxDB yanıt vermezse **ayrı bir iş parçacığı** en eski noktaları 1500'lük bloklar halinde diske yazar (`fsync` + atomik ad değiştirme; yarım kalmış blok olmaz). RAM kullanımı sabit kalır: testte 45 sn kesintide ajan 60 MB'ta kaldı.
+3. Bağlantı gelince önce diskteki bloklar (en eskiden yeniye), sonra RAM'deki noktalar **orijinal zaman damgalarıyla** gönderilir. Panoda boşluk kalmaz.
+4. Birikmiş veri gönderilirken ajan hızını kendi CPU süresine göre ayarlar (`backlog_cpu_percent: 10`). Saatlerce biriken veri, sunucuyu yormadan arka planda eritilir.
+5. Ajan kesinti sırasında durdurulursa (servis durdurma, yeniden başlatma) RAM'deki noktalar da diske yazılır ve bir sonraki açılışta gönderilir.
+
+### Ölçülen ayak izi (Windows 11, gerçek InfluxDB 2.7)
+
+| Senaryo | Sonuç |
+| :--- | :--- |
+| Normal çalışma | CPU ortalama **%2.8**, en yüksek %6.2 (tek çekirdeğin %'si) · RAM **59 MB** |
+| 45 sn InfluxDB kesintisi | 3 blok diske yazıldı · RAM en yüksek 60 MB · kesinti sonrası **boşluksuz** toparlandı |
+| Kesinti sınırı aşıldı | Ajan kendiliğinden durdu (kod 4) · bekleyen veri diskte kaldı, yeniden başlayınca gönderildi |
+| 6 saatlik birikmiş veri (540 000 nokta) | 110 sn'de gönderildi · CPU 3 sn ortalaması en yüksek **%17** (sınır 25) · RAM 63 MB |
+| RAM sınırı 50 MB'a düşürüldü | Ajan **1.2 sn** içinde durdu (kod 3) · gözetmen yeniden başlatmadı |
+| Gözetmen sert biçimde öldürüldü | Ajan 1.2 sn içinde kendiliğinden kapandı |
+
+> ℹ️ `strict_mode: false` yapılırsa ajan hatalarda durmaz, günlüğe yazıp devam eder ve geride kalırsa sessizce yeniden hizalanır. Diske bekletme ve güvenlik sınırları bu modda da geçerlidir. Kritik sunucular için önerilmez.
 
 ---
 
@@ -178,6 +255,10 @@ Servis, tüm süreçlerin disk sayaçlarını okuyabilmek için yalnızca `CAP_S
   "log_dir": "logs",
   "log_retention_days": 14,
   "log_level": "INFO",
+  "strict_mode": true,
+  "limits":    { "max_cpu_percent": 25, "max_memory_mb": 200, "cpu_window_seconds": 3 },
+  "precision": { "max_missed_slots": 3, "slot_tolerance_ms": 500 },
+  "restart":   { "max_attempts": 5, "delay_seconds": 300, "reset_after_seconds": 3600 },
   "influx": {
     "enabled": true,
     "url": "http://localhost:8086",
@@ -185,7 +266,13 @@ Servis, tüm süreçlerin disk sayaçlarını okuyabilmek için yalnızca `CAP_S
     "org": "secondx",
     "bucket": "secondx",
     "timeout_ms": 5000,
-    "max_buffer_points": 200000
+    "max_memory_points": 30000,
+    "spool_dir": "spool",
+    "spool_block_points": 1500,
+    "max_outage_hours": 6,
+    "max_spool_mb": 1024,
+    "min_free_disk_mb": 1024,
+    "backlog_cpu_percent": 10
   },
   "local_output": { "enabled": "auto", "dir": "data", "retention_days": 14 }
 }
@@ -200,7 +287,20 @@ Servis, tüm süreçlerin disk sayaçlarını okuyabilmek için yalnızca `CAP_S
 | `log_dir`, `log_retention_days` | `logs`, `14` | Günlük dosyası (`secondx.log`, gece yarısı döner) ve saklama süresi |
 | `log_level` | `INFO` | `DEBUG` her örneği yazar |
 | `influx.*` | | InfluxDB v2 bağlantısı. `token` boşsa InfluxDB kullanılmaz |
-| `influx.max_buffer_points` | `200000` | InfluxDB'ye ulaşılamazken bellekte tutulacak nokta sayısı (1 sn aralık ve top 6 ile ≈ 2 saat) |
+| `strict_mode` | `true` | Sorun çıkınca anında dur (bkz. [Sıkı mod](#-sıkı-mod-kritik-sunucular-için)) |
+| `limits.max_cpu_percent` | `25` | Ajanın kendi CPU sınırı, **tek çekirdeğin** %'si olarak |
+| `limits.max_memory_mb` | `200` | Ajanın kendi RAM (RSS) sınırı, MB |
+| `limits.cpu_window_seconds` | `3` | CPU sınırının ortalandığı pencere (kısa anlık sıçramalar durdurmaz) |
+| `precision.max_missed_slots` | `3` | Art arda kaçırılabilecek örnek sayısı |
+| `precision.slot_tolerance_ms` | `500` | Bir örneğin "kaçırıldı" sayılması için gecikme |
+| `restart.max_attempts` / `delay_seconds` / `reset_after_seconds` | `5` / `300` / `3600` | Gözetmenin yeniden başlatma politikası (Windows `--supervise`) |
+| `influx.max_memory_points` | `30000` | RAM tamponu. Yarısı dolunca diske yazmaya başlanır, tamamı dolarsa ajan durur |
+| `influx.spool_dir` | `spool` | Kesintide blokların yazılacağı klasör (boş = diske yazma yok) |
+| `influx.spool_block_points` | `1500` | Bir bloktaki nokta sayısı (1 sn, top 6 ile ≈ 1 dakikalık veri) |
+| `influx.max_outage_hours` | `6` | Bu süreden uzun kesintide ajan durur (kod 4) |
+| `influx.max_spool_mb` | `1024` | Diskteki bekleyen verinin üst sınırı |
+| `influx.min_free_disk_mb` | `1024` | Diskte en az bu kadar boş yer bırakılır |
+| `influx.backlog_cpu_percent` | `10` | Birikmiş veri gönderilirken kullanılacak CPU (tek çekirdeğin %'si). `max_cpu_percent`'in yarısını geçemez |
 | `local_output.enabled` | `auto` | Token yoksa `data/metrics-GÜN.jsonl` dosyalarına yaz |
 
 **Ortam değişkenleri** config dosyasını geçersiz kılar. Token'ı dosyada tutmamak için önerilen yol budur:
@@ -217,6 +317,7 @@ Servis, tüm süreçlerin disk sayaçlarını okuyabilmek için yalnızca `CAP_S
 
 ```text
 python SecondX.py              ajanı çalıştır
+python SecondX.py --supervise  ajanı yeniden başlatma politikasıyla (gözetmen altında) çalıştır
 python SecondX.py --once       tek örnek al, tablo olarak yazdır, çık
 python SecondX.py --check      config + InfluxDB bağlantısı ve yazma iznini test et
 python SecondX.py --dry-run    ölç ama hiçbir yere yazma
@@ -271,12 +372,11 @@ from(bucket: "secondx")
 
 ## 🛡️ İşletim ve güvenlik
 
-- **Kaynak kullanımı:** bir örnek Windows'ta ~5-40 ms, Linux'ta birkaç ms CPU harcar. Bellek kullanımı sabittir (tampon sınırlıdır).
-- **Kesinti davranışı:** InfluxDB kapalıyken noktalar bekletilir ve 1 → 60 sn aralıklarla yeniden denenir. Bağlantı gelince boşluksuz yazılır. Tampon dolarsa en eski noktalar atılır ve günlüğe yazılır.
-- **Durum satırı:** ajan 5 dakikada bir özet yazar: örnek sayısı, yavaş turlar, hatalar, gönderilen/bekleyen/atılan nokta.
-- **Hata dayanıklılığı:** tek bir hatalı tur ajanı durdurmaz. Beklenmedik bir çökme nedeniyle birlikte günlüğe yazılır ve servis yöneticisi ajanı yeniden başlatır.
-- **Düzgün kapanma:** SIGTERM / Ctrl+C / servis durdurma → bekleyen noktalar gönderilir (en fazla 5 sn), sonra kapanır.
-- **Sırlar:** `.env`, `token.json`, `secondx.env`, `logs/` ve `data/` git'e alınmaz (`.gitignore`). Token'ı ortam değişkeniyle verin.
+- **Kaynak kullanımı:** bir örnek Windows'ta ~5-40 ms, Linux'ta birkaç ms CPU harcar. Ajan kendi CPU/RAM'ini sürekli ölçer ve sınırı aşarsa durur. Linux'ta systemd ikinci bir çekirdek sınırı uygular.
+- **Kesinti davranışı:** InfluxDB kapalıyken noktalar 1 → 60 sn aralıklarla yeniden denenir. Bekleyen veri diske bloklar halinde yazılır. Bağlantı gelince boşluksuz gönderilir. **Veri hiçbir zaman sessizce atılmaz**; sınır aşılırsa ajan durur ve veri diskte kalır.
+- **Durum satırı:** ajan 5 dakikada bir özet yazar: örnek sayısı, kaçırılan örnekler, hatalar, gönderilen / RAM'de bekleyen / diske yazılan nokta.
+- **Düzgün kapanma:** SIGTERM / Ctrl+C / servis durdurma → bekleyen noktalar gönderilir (en fazla 5 sn). Gönderilemeyenler diske yazılır, sonra ajan kapanır.
+- **Sırlar:** `.env`, `token.json`, `secondx.env`, `logs/`, `data/` ve `spool/` git'e alınmaz (`.gitignore`). Token'ı ortam değişkeniyle verin.
 - **InfluxDB yetkisi:** üretimde ajan için yalnızca ilgili bucket'a **yazma** yetkisi olan ayrı bir token oluşturun (Influx UI → API Tokens → Custom).
 
 ---
@@ -291,6 +391,11 @@ from(bucket: "secondx")
 | Linux'ta başka kullanıcıların süreçleri disk listelerinde görünmüyor | Ajanı `secondx.service` ile çalıştırın (gerekli yetkiler orada tanımlı); elle çalıştırıyorsanız `sudo` kullanın |
 | Panoda **No data** | Pano üstündeki Bucket adı doğru mu? Host seçili mi? Zaman aralığı son 15 dk mı? |
 | `ERROR: config.json: invalid JSON at line N` | Belirtilen satırda eksik tırnak veya fazla virgül |
+| Ajan durdu, **kod 3** (`own CPU/RAM limit exceeded`) | Sunucuda çok sayıda süreç varsa ajan daha fazla kaynak isteyebilir. Günlükteki ölçülen değere bakıp `limits` sınırlarını yükseltin, sonra elle başlatın |
+| Ajan durdu, **kod 4** (`unreachable for ...`) | InfluxDB'yi düzeltin, sonra ajanı başlatın: diskteki bloklar otomatik gönderilir |
+| Ajan durdu, **kod 4** (`spool size` / `free disk space`) | Diskte yer açın ya da `max_spool_mb` / `min_free_disk_mb` değerlerini gözden geçirin |
+| Ajan durdu, **kod 5** (`precision lost`) | Sunucu aşırı yüklü, ajan saniyelik ritmi tutturamıyor. 5 dk sonra yeniden denenir. Sürekliyse `interval_seconds` değerini artırın |
+| Windows'ta ajan kendiliğinden yeniden başlamıyor | `logs/secondx-supervisor.log`'a bakın: kod 2/3/4 ya da 5 başarısız denemeden sonra bilerek kapalı kalır |
 
 ---
 
@@ -300,6 +405,7 @@ from(bucket: "secondx")
 - `token.json` hâlâ okunur, ancak değerleri `config.json` → `influx` bölümüne ya da ortam değişkenlerine taşıyın.
 - Veri şeması değişti: `Custom_scripts` / `EX134*` alanlarının yerine [`secondx_system` ve `secondx_process`](#-veri-şeması) geldi. Eski panolar yeni ölçümlere göre güncellenmeli. Hazır pano yeni şemayı kullanır.
 - `influx_exporter.influx_creator(...)` fonksiyonu eski betikler için korunmuştur.
+- 2.0 → 2.1: `influx.max_buffer_points` hâlâ okunur (`max_memory_points` olarak). Sıkı mod varsayılan olarak açıktır; eski davranış için `"strict_mode": false`. Windows'ta görevi `install_windows.ps1` ile yeniden kurun (`--supervise` eklenir). Linux'ta `sudo ./install_linux.sh` yeterlidir.
 
 Ayrıntılar: [CHANGELOG.md](CHANGELOG.md)
 
@@ -317,7 +423,7 @@ persecc/
 ├── collector.py          # Ölçüm: sistem ve süreç metrikleri, hız hesapları
 ├── win_snapshot.py       # Windows hızlı süreç listesi (NtQuerySystemInformation)
 ├── lissozis.py           # Sıralama: en çok tüketen N süreç
-├── influx_exporter.py    # Aktarım: toplu, bloklamayan, yeniden deneyen yazıcı + yerel dosya
+├── influx_exporter.py    # Aktarım: toplu, bloklamayan yazıcı + diske bloklu bekletme + yerel dosya
 ├── config.json           # Ajan ayarları (sır içermez)
 ├── requirements.txt
 ├── run_agent.bat                 # Windows: elle çalıştırma

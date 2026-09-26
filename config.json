@@ -1,11 +1,34 @@
 {
   "interval_seconds": 1,
   "top_n": 6,
-  "exclude_processes": ["System Idle Process", "Idle", "MemCompression", "Memory Compression", "Secure System", "Registry", "System"],
+  "exclude_processes": [
+    "System Idle Process",
+    "Idle",
+    "MemCompression",
+    "Memory Compression",
+    "Secure System",
+    "Registry",
+    "System"
+  ],
   "host": "",
   "log_dir": "logs",
   "log_retention_days": 14,
   "log_level": "INFO",
+  "strict_mode": true,
+  "limits": {
+    "max_cpu_percent": 25,
+    "max_memory_mb": 200,
+    "cpu_window_seconds": 3
+  },
+  "precision": {
+    "max_missed_slots": 3,
+    "slot_tolerance_ms": 500
+  },
+  "restart": {
+    "max_attempts": 5,
+    "delay_seconds": 300,
+    "reset_after_seconds": 3600
+  },
   "influx": {
     "enabled": true,
     "url": "http://localhost:8086",
@@ -13,7 +36,13 @@
     "org": "secondx",
     "bucket": "secondx",
     "timeout_ms": 5000,
-    "max_buffer_points": 200000
+    "max_memory_points": 30000,
+    "spool_dir": "spool",
+    "spool_block_points": 1500,
+    "max_outage_hours": 6,
+    "max_spool_mb": 1024,
+    "min_free_disk_mb": 1024,
+    "backlog_cpu_percent": 10
   },
   "local_output": {
     "enabled": "auto",
