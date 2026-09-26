@@ -13,6 +13,7 @@ immediately and says why (strict mode, on by default).
 Usage:
     python SecondX.py                  run the agent
     python SecondX.py --supervise      run under the built-in restart policy (services)
+    SecondX.exe --service install ...  Windows: register / remove the service (used by the installer)
     python SecondX.py --once           print one sample as a table and exit
     python SecondX.py --check          validate config and InfluxDB connection
     python SecondX.py --dry-run        sample continuously, export nothing
@@ -46,7 +47,7 @@ import influx_exporter as ife
 import lissozis as ls
 from collector import Collector, Sample, hostname
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 FROZEN = bool(getattr(sys, "frozen", False))          # SecondX.exe (PyInstaller), no Python needed
 BASE_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 log = logging.getLogger("secondx")
@@ -667,6 +668,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
         pass
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["--service"]:                         # Windows service install / uninstall
+        import winservice
+        return winservice.main(argv[1:], BASE_DIR, DEFAULT_CONFIG)
     parser = argparse.ArgumentParser(description="SecondX high-precision infrastructure telemetry agent")
     parser.add_argument("--config", default=os.environ.get("SECONDX_CONFIG", str(BASE_DIR / "config.json")))
     parser.add_argument("--once", action="store_true", help="print one sample as a table and exit")

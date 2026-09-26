@@ -18,6 +18,7 @@ import collector  # noqa: E402
 import influx_exporter as ife  # noqa: E402
 import lissozis as ls  # noqa: E402
 import SecondX as sx  # noqa: E402
+import winservice  # noqa: E402
 
 
 class RankingTest(unittest.TestCase):
@@ -164,8 +165,9 @@ class ExporterTest(unittest.TestCase):
                            backlog_min_pause_seconds=0, min_free_disk_bytes=0)
         for k in range(30):                           # 30 "seconds" x 50 points
             exp.submit(pts(k * 50, 50))
-        self.assertTrue(wait_until(lambda: len(list(self.spool.glob("block-*.lp"))) >= 10))
-        self.assertLess(exp.pending, 200)                 # RAM stays bounded
+        # the spooler moves every full block of 100 to disk: less than one block stays in RAM
+        self.assertTrue(wait_until(lambda: exp.pending < 100))
+        self.assertGreaterEqual(len(list(self.spool.glob("block-*.lp"))), 14)
         sink.down = False
         exp._wake.set()
         self.assertTrue(wait_until(lambda: len(sink.received) == 1500))
@@ -723,6 +725,57 @@ class WindowsSnapshotTest(unittest.TestCase):
         t = time.perf_counter()
         c.sample()
         self.assertLess(time.perf_counter() - t, 0.5)
+
+
+class WinServiceTest(unittest.TestCase):
+    """The parts of 'SecondX.exe --service' that need no administrator rights."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.program, self.data = base / "Program Files" / "SecondX", base / "ProgramData" / "SecondX"
+        self.program.mkdir(parents=True)
+        (self.program / "config.default.json").write_text(json.dumps(sx.DEFAULT_CONFIG), encoding="utf-8")
+        self.token = base / "tok.txt"
+        self.token.write_text("s3cr3t\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def service(self, *args):
+        return winservice.main(list(args) + ["--program-dir", str(self.program), "--data-dir", str(self.data),
+                                             "--no-task"], self.program, sx.DEFAULT_CONFIG)
+
+    def test_install_writes_config_and_token_but_never_the_token_into_the_config(self):
+        self.assertEqual(0, self.service("install", "--url", "http://db:8086", "--org", "o", "--bucket", "b",
+                                         "--token-file", str(self.token), "--host", "WEB-01", "--delete-token-file"))
+        text = (self.data / "config.json").read_text(encoding="utf-8")
+        self.assertNotIn("s3cr3t", text)
+        self.assertEqual("s3cr3t", (self.data / "secondx.token").read_text(encoding="utf-8").strip())
+        self.assertFalse(self.token.exists())                       # installer's temporary copy removed
+        cfg, _ = sx.load_config(self.data / "config.json")         # the agent reads it back
+        self.assertEqual(("http://db:8086", "o", "b", "s3cr3t", "WEB-01"),
+                         (cfg["influx"]["url"], cfg["influx"]["org"], cfg["influx"]["bucket"],
+                          cfg["influx"]["token"], cfg["host"]))
+
+    def test_local_mode_and_upgrade_keeps_settings(self):
+        self.assertEqual(0, self.service("install", "--local"))
+        cfg, _ = sx.load_config(self.data / "config.json")
+        self.assertFalse(sx.influx_configured(cfg))
+        (self.data / "config.json").write_text(json.dumps({"top_n": 9}), encoding="utf-8")   # admin's own edit
+        self.assertEqual(0, self.service("install", "--keep-config"))
+        self.assertEqual({"top_n": 9}, json.loads((self.data / "config.json").read_text(encoding="utf-8")))
+
+    def test_influx_without_token_is_refused(self):
+        self.assertEqual(1, self.service("install", "--url", "http://db:8086"))
+        self.assertFalse((self.data / "config.json").exists())
+
+    def test_uninstall_removes_data_only_when_asked(self):
+        self.service("install", "--local")
+        self.assertEqual(0, self.service("uninstall"))
+        self.assertTrue(self.data.exists())
+        self.assertEqual(0, self.service("uninstall", "--remove-data"))
+        self.assertFalse(self.data.exists())
 
 
 if __name__ == "__main__":
