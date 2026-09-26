@@ -78,9 +78,8 @@ flowchart LR
 flowchart TD
     S(["Servis başlar<br/>Windows: --supervise · Linux: systemd"]) --> Y{"config.json geçerli mi?"}
     Y -->|hayır| C2["Dur · kod 2<br/>yapılandırma hatası"]
-    Y -->|evet| O["Diskte önceki kesintiden blok varsa<br/>arka planda önce onlar gönderilir"]
-    O --> T["Saniye başı: ölçüm al<br/>sistem + en çok tüketen N süreç"]
-    T --> Q["Noktaları RAM tamponuna ekle<br/>ağı ve diski asla beklemez"]
+    Y -->|evet| T["Saniye başı: ölçüm al<br/>sistem + en çok tüketen N süreç"]
+    T --> Q["Noktaları RAM tamponuna ekle<br/>ve göndericiyi uyandır"]
     T -. "beklenmedik hata" .-> C1["Dur · kod 1<br/>hata"]
     Q --> G1{"Dışa aktarım güvenlik sınırı?<br/>kesinti > 6 sa · spool > 1 GB<br/>boş disk < 1 GB · RAM tamponu dolu"}
     G1 -->|evet| C4["Dur · kod 4<br/>veri diskte kalır"]
@@ -89,6 +88,14 @@ flowchart TD
     G2 -->|hayır| G3{"Art arda 3 ölçüm<br/>500 ms'den fazla geç mi?"}
     G3 -->|evet| C5["Dur · kod 5<br/>hassasiyet kaybı"]
     G3 -->|hayır| W["Bir sonraki saniyeyi bekle"] --> T
+
+    subgraph P["Arka plan: ölçüm döngüsüyle aynı anda çalışır"]
+        direction TB
+        SN["Gönderici iş parçacığı<br/>tampondaki noktaları hemen yazar<br/>önce diskte bekleyen bloklar"] --> I[("InfluxDB")]
+        SN -. "InfluxDB yanıt vermezse" .-> SP["Diske yazıcı iş parçacığı<br/>1500 noktalık bloklar: spool/"]
+        SP -. "bağlantı gelince" .-> SN
+    end
+    Q == "her saniye" ==> SN
 
     C1 --> R{"5 yeniden deneme<br/>doldu mu?"}
     C5 --> R
@@ -100,11 +107,13 @@ flowchart TD
 
     classDef dur fill:#fde2e2,stroke:#c0392b,color:#000
     classDef tamam fill:#e3f4e1,stroke:#2e7d32,color:#000
+    classDef arka fill:#e3eefc,stroke:#1f5fa8,color:#000
     class C1,C2,C3,C4,C5,K dur
     class W tamam
+    class SN,SP,I arka
 ```
 
-Kırmızı kutular ajanın durduğu noktalardır. Kod 1 ve 5 geçici sorunlardır: 5 dk arayla en fazla 5 kez yeniden denenir. Kod 2, 3 ve 4 bir yöneticinin bakmasını gerektirir: ajan kendiliğinden yeniden başlamaz. Ayrıntılar: [Sıkı mod](#-sıkı-mod-kritik-sunucular-için).
+Ölçüm döngüsü InfluxDB'ye kendisi yazmaz: noktaları RAM tamponuna koyar ve **aynı anda çalışan** gönderici iş parçacığını uyandırır. Gönderici noktaları hemen (normalde milisaniyeler içinde, bir sonraki saniye gelmeden) InfluxDB'ye yazar. Böylece InfluxDB yavaşlasa ya da kapansa bile ölçüm döngüsü hiç beklemez ve saniyelik ritim bozulmaz. Mavi kutular bu arka plan işidir. Kırmızı kutular ajanın durduğu noktalardır. Kod 1 ve 5 geçici sorunlardır: 5 dk arayla en fazla 5 kez yeniden denenir. Kod 2, 3 ve 4 bir yöneticinin bakmasını gerektirir: ajan kendiliğinden yeniden başlamaz. Ayrıntılar: [Sıkı mod](#-sıkı-mod-kritik-sunucular-için).
 
 ---
 
