@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.3.1 - 2026-09-26
+
+### Changed
+- **Windows installer rebuilt with Inno Setup** instead of a PyInstaller one-file exe (5/71 VirusTotal heuristic detections → 3/71). Turkish / English wizard, the InfluxDB connection is tested on the settings page, silent install parameters (`/VERYSILENT /URL= /ORG= /BUCKET= /TOKENFILE= /HOST= /LOCAL`), standard uninstaller (`unins000.exe [/KEEPDATA]`). The installer is 10.8 MB instead of 17.5 MB.
+- Settings, the protected token file and the Scheduled Task are handled by `SecondX.exe --service install|uninstall` (`winservice.py`), so they are unit tested and also usable without the installer.
+- `packaging/windows/sign.ps1`: signs the agent, the setup and the uninstaller (Authenticode SHA-256 + RFC 3161 timestamp) with a certificate from the Windows store, e.g. Certum SimplySign.
+
+### Fixed
+- A timing race in an exporter test that could make it fail occasionally.
+
+### Documentation
+- README: virus scan results (Windows Defender, VirusTotal) with an explanation of each heuristic detection.
+
 ## 2.3.0 - 2026-09-26
 
 Easy, trustworthy installation.

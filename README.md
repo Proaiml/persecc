@@ -27,6 +27,7 @@
   - [D. Linux sunucular](#d-linux-sunucular-systemd-servisi)
 - [Sıkı mod (kritik sunucular için)](#-sıkı-mod-kritik-sunucular-için)
 - [Olay ve risk tablosu](#-olay-ve-risk-tablosu)
+- [Virüs tarama sonuçları](#-virüs-tarama-sonuçları)
 - [Yapılandırma](#%EF%B8%8F-yapılandırma)
 - [Grafana panosu](#-grafana-panosu)
 - [Veri şeması](#-veri-şeması)
@@ -51,8 +52,8 @@ Bir izleme ajanını üretim sunucusuna kurmadan önce sorulması gereken sorula
 | **Diski doldurabilir mi?** | Hayır. InfluxDB'ye ulaşılamazken bekleyen veri en fazla 1 GB olur ve diskte her zaman en az 1 GB boş yer bırakılır; aksi halde ajan durur. Günlükler 14 günde bir silinir. |
 | **Token (şifre) nerede durur?** | Windows: `C:\ProgramData\SecondX\secondx.token`, yalnızca SYSTEM ve Yöneticiler açabilir. Linux: `/etc/secondx/secondx.env`, yalnızca root okur. Ayar dosyasında ve ekranda görünmez. Ajana InfluxDB'de yalnızca **yazma** yetkili ayrı bir token verin. |
 | **Sorun çıkarsa ne olur?** | Ajan ya sorunsuz çalışır ya da **durur**; yavaşlayarak, belleği şişirerek çalışmaya devam etmez. Tüm olasılıklar: [Olay ve risk tablosu](#-olay-ve-risk-tablosu). |
-| **Kodu kim denetleyebilir?** | Tamamı açık kaynak (MIT), yaklaşık **1 700 satır** Python ve 48 otomatik test. Kurulum dosyasını [kaynaktan kendiniz derleyebilirsiniz](#a-windows-tek-dosyayla-hızlı-kurulum-önerilen). |
-| **Nasıl kaldırılır?** | Ayarlar → Uygulamalar → **SecondX telemetry agent** → Kaldır. Görev, program, ayarlar ve kayıt defteri girdisi silinir; iz kalmaz. |
+| **Kodu kim denetleyebilir?** | Tamamı açık kaynak (MIT), yaklaşık **2 000 satır** Python ve 52 otomatik test. Kurulum dosyasını [kaynaktan kendiniz derleyebilirsiniz](#a-windows-tek-dosyayla-hızlı-kurulum-önerilen). Her sürümün [virüs tarama sonuçları](#-virüs-tarama-sonuçları) yayınlanır. |
+| **Nasıl kaldırılır?** | Ayarlar → Uygulamalar → **SecondX telemetry agent** → Kaldır. Görev ve program silinir; ayarların, günlüklerin ve bekleyen verinin de silinip silinmeyeceği sorulur. |
 
 ---
 
@@ -150,7 +151,7 @@ python SecondX.py --once
 ```
 
 ```
-SecondX 2.3.0 | host WEB-01 | interval 1.00s
+SecondX 2.3.1 | host WEB-01 | interval 1.00s
 CPU   7.6%   RAM  77.4% (24.7 GB)   Disk R/W    108.7 /    164.6 KB/s   Net out/in      0.6 /      1.1 KB/s
 
 Top cpu (%):
@@ -177,21 +178,22 @@ Python veya başka bir program kurmanız gerekmez.
    ```powershell
    Get-FileHash .\SecondX-Setup.exe -Algorithm SHA256
    ```
-3. `SecondX-Setup.exe`'ye çift tıklayın ve yönetici onayını verin. Kurulum önce **ne yapacağını** gösterir, sonra sırayla sorar: veri nereye yazılsın (InfluxDB ya da yerel dosya), InfluxDB adresi, org, bucket, token (yazarken görünmez), panoda görünecek sunucu adı.
-4. Kurulum bağlantıyı dener, ajanı başlatır ve çalıştığını günlükten doğrulayarak biter.
+3. `SecondX-Setup.exe`'ye çift tıklayın ve yönetici onayını verin. Klasik bir **Türkçe kurulum sihirbazı** açılır (Windows dili Türkçe değilse İngilizce): lisans, **ne yapıp ne yapmadığı**, veri nereye yazılsın (InfluxDB ya da yerel dosya), InfluxDB adresi / org / bucket / token (yazarken görünmez), panoda görünecek sunucu adı.
+4. InfluxDB sayfasında **İleri**'ye bastığınızda bağlantı hemen denenir; sorun varsa nedeni (adrese ulaşılamadı, token yetkisiz, bucket bulunamadı) yazılır.
+5. Kurulum ajanı başlatır, çalıştığını günlükten doğrular ve son sayfada sonucu gösterir.
 
 ```mermaid
 flowchart LR
     A(["SecondX-Setup.exe"]) --> B["Yönetici onayı"]
-    B --> C["Ne yapılacağını göster<br/>onay al"]
-    C --> D["Ayarları sor<br/>InfluxDB / yerel dosya"]
-    D --> E["Programı kopyala<br/>Program Files"]
-    E --> F["Ayarlar + token<br/>yalnız SYSTEM ve Yöneticiler"]
-    F --> G{"Bağlantı denemesi<br/>--check"}
-    G -->|başarılı| H["Görev + kaldırma kaydı"]
+    B --> C["Lisans ve<br/>ne yapıp ne yapmadığı"]
+    C --> D["Ayarlar<br/>InfluxDB / yerel dosya"]
+    D --> G{"Bağlantı denemesi"}
+    G -->|başarılı| E["Programı kopyala<br/>Program Files"]
     G -->|sorun var| U{"Yine de kur?"}
-    U -->|evet| H
-    U -->|hayır| X(["İptal"])
+    U -->|evet| E
+    U -->|hayır| D
+    E --> F["Ayarlar + token<br/>yalnız SYSTEM ve Yöneticiler"]
+    F --> H["Zamanlanmış görev"]
     H --> I["Başlat ve günlükten doğrula"]
     I --> J(["Kurulum tamam"])
 ```
@@ -204,28 +206,32 @@ flowchart LR
 | Otomatik başlatma | Görev Zamanlayıcı → `SecondX` (açılışta, SYSTEM) | |
 | Kaldırma | Ayarlar → Uygulamalar → SecondX telemetry agent | |
 
-**Güncelleme:** yeni `SecondX-Setup.exe`'yi çalıştırın. Mevcut ayarları korumayı teklif eder; çalışan ajanı durdurur, programı yeniler ve yeniden başlatır. Diskte bekleyen veri korunur.
+**Güncelleme:** yeni `SecondX-Setup.exe`'yi çalıştırın. Mevcut ayarları korumayı teklif eder; çalışan ajanı durdurur (RAM'deki veri önce diske yazılır), programı yeniler ve yeniden başlatır. Diskte bekleyen veri korunur.
 
 **Toplu dağıtım (soru sormadan):** GPO, SCCM/Intune ya da uzak PowerShell ile:
 
 ```powershell
-# InfluxDB'ye yazan kurulum (token'ı dosyadan okur)
-SecondX-Setup.exe --quiet --url http://influx.local:8086 --org secondx --bucket secondx --token-file \\paylasim\secondx.token
+# InfluxDB'ye yazan kurulum (token dosyadan okunur, komut satırında görünmez)
+SecondX-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /URL=http://influx.local:8086 /ORG=secondx /BUCKET=secondx /TOKENFILE=\\paylasim\secondx.token /HOST=WEB-01
 # Yalnızca yerel dosyaya yazan kurulum
-SecondX-Setup.exe --quiet --local
-# Kaldırma (ayarları korumak için --keep-data)
-SecondX-Setup.exe --uninstall --quiet
+SecondX-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /LOCAL
+# Güncelleme: parametresiz sessiz kurulum mevcut ayarları korur
+SecondX-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES
+# Kaldırma (ayarları ve bekleyen veriyi korumak için /KEEPDATA)
+"C:\Program Files\SecondX\unins000.exe" /VERYSILENT
 ```
 
-> ⚠️ `--token` seçeneği de vardır, ancak komut satırları süreç listesinde diğer kullanıcılara görünebilir. Toplu dağıtımda `--token-file` kullanın.
+Kurulum günlüğü için `/LOG="C:\secondx-setup.log"` ekleyin. Sonradan elle yapılandırmak isterseniz aynı işi ajan da yapar: `SecondX.exe --service install --url ... --token-file ...`.
 
-**Windows SmartScreen / antivirüs uyarısı:** `SecondX-Setup.exe` dijital imzalı değildir. Windows "Windows kişisel bilgisayarınızı korudu" diyebilir: **Ek bilgi → Yine de çalıştır**. Sisteminiz imzasız dosyalara izin vermiyorsa iki yol vardır:
+**Windows SmartScreen / antivirüs uyarısı:** `SecondX-Setup.exe` henüz dijital imzalı değildir (imza sertifikası başvurusu sürüyor; bkz. [Virüs tarama sonuçları](#-virüs-tarama-sonuçları)). Windows "Windows kişisel bilgisayarınızı korudu" diyebilir: **Ek bilgi → Yine de çalıştır**. Sisteminiz imzasız dosyalara izin vermiyorsa iki yol vardır:
 
 - Dosyayı SHA256 değeriyle güvenilir listeye alın.
-- Kurulum dosyasını **kaynaktan kendiniz derleyin** (temiz bir sanal ortam kurar, yalnızca `requirements.txt` ve PyInstaller'ı kullanır):
+- Kurulum dosyasını **kaynaktan kendiniz derleyin**. Gerekenler: Python 3.9+ ve [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`). Betik temiz bir sanal ortam kurar ve yalnızca `requirements.txt` ile PyInstaller'ı kullanır:
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1     # → dist\SecondX-Setup.exe + SHA256SUMS.txt
+  # kod imzalama sertifikanız varsa ajan, kurulum ve kaldırıcı birlikte imzalanır:
+  powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 -CertThumbprint <sertifika parmak izi>
   ```
 
 ### B. InfluxDB + Grafana tek komutla (Docker)
@@ -410,7 +416,7 @@ Bir sunucuda olabilecek tüm olaylar, ajanın her birine tepkisi ve sizin yapman
 | :-: | :--- | :-: | :--- | :-: | :--- |
 | 13 | Ajan RAM sınırını aşar (200 MB) | <%1 (ölçülen 59-65 MB = sınırın **%33**'ü) | Aşıldığı ilk saniyede durur (kod 3); kendiliğinden yeniden **başlamaz** ✓ | Duruşa kadar **%100** | Günlükteki değere bakıp `limits.max_memory_mb`'ı yükseltin |
 | 14 | Ajan CPU sınırını aşar (%25) | %1 (ölçülen ort. %1.8, en yüksek %17 = sınırın **%68**'i) | 3 sn ortalaması aşınca durur (kod 3) ✓ | Duruşa kadar **%100** | Binlerce süreçli sunucularda `limits.max_cpu_percent`'i yükseltin |
-| 15 | Yazılım hatası | <%1 (48 otomatik test) | Durur (kod 1); 5 dk arayla en fazla 5 kez yeniden başlar ✓ | **%100** (veri diske yazılır) | 5 deneme de başarısızsa günlüğü iletin |
+| 15 | Yazılım hatası | <%1 (52 otomatik test) | Durur (kod 1); 5 dk arayla en fazla 5 kez yeniden başlar ✓ | **%100** (veri diske yazılır) | 5 deneme de başarısızsa günlüğü iletin |
 | 16 | Gönderici iş parçacığı çöker ya da bir yazma 30 sn'den uzun takılır | <%1 | Her saniye denetlenir; ajan durur (kod 1) ve temiz bağlantıyla yeniden başlar. Yazılmakta olan paket diske kaydedilir ✓ | **%100** | Hiçbir şey |
 | 17 | Biri ajanı elle ikinci kez çalıştırır | %2 | İkinci kopya hemen çıkar (kod 2); çalışan ajan etkilenmez ✓ | **%100** | Hiçbir şey |
 | 18 | Görev / gözetmen zorla sonlandırılır | %2 | Ajan ~1 sn içinde kendiliğinden kapanır, sahipsiz süreç kalmaz ✓ | Sonlandırmadan sonrası ölçülmez | Görevi yeniden başlatın |
@@ -436,6 +442,33 @@ Kaybın en büyük kaynağı ajanın kendisi değil, ajan **bilerek durduğunda*
 | **Toplam** | 2.9 sa / 8 760 sa | **%0.033 → veri bütünlüğü ≈ %99.97** |
 
 Grafana'da "bu sunucudan 2 dakikadır veri gelmiyor" alarmı kurar ve 1 saat içinde müdahale ederseniz: %12 × 1 sa ≈ 7 dk/yıl → **≈ %99.999**. Önerimiz bu alarmı mutlaka kurmanızdır.
+
+---
+
+## 🦠 Virüs tarama sonuçları
+
+Her sürümün kurulum dosyası yayınlanmadan önce taranır. Sonuçlar olduğu gibi yazılır.
+
+**SecondX 2.3.1** · `SecondX-Setup.exe` · SHA256 `fb5a03a9b7a270196f4d43b7b3e206fd53a75d20531e8c0fa1346479c7595809`
+
+| Tarama | Sonuç |
+| :--- | :--- |
+| Windows Defender (yerel, imza sürümü 1.459.408.0) | Kurulum ve ajan: **tehdit bulunamadı** |
+| [VirusTotal](https://www.virustotal.com/gui/file/fb5a03a9b7a270196f4d43b7b3e206fd53a75d20531e8c0fa1346479c7595809/detection) (71 motor) | **68 temiz**, 3 tahmine dayalı uyarı (aşağıda) |
+
+| Motor | Uyarı | Türü |
+| :--- | :--- | :--- |
+| Microsoft | `Trojan:Win32/Wacatac.C!ml` | `!ml` = makine öğrenmesi tahmini, bilinen bir zararlı yazılım değil |
+| SecureAge | `Malicious` | Yapay zekâ tabanlı tahmin |
+| Skyhigh | `BehavesLike.Win32.ObfuscatedPoly` | "Şuna benziyor" türü sezgisel tahmin |
+
+**Bu uyarılar neden çıkıyor?** Yeni, imzasız ve henüz az indirilmiş kurulum dosyaları, yapay zekâ tabanlı motorlarda sık sık bu tür genel etiketler alır; hiçbiri bilinen bir zararlı yazılım ailesine işaret etmez. Kaspersky, ESET, Bitdefender, Avast, Sophos, CrowdStrike dahil diğer 68 motor dosyayı temiz buldu. Programın tüm kaynak kodu bu depodadır; kurulum dosyasını [kendiniz derleyebilirsiniz](#a-windows-tek-dosyayla-hızlı-kurulum-önerilen).
+
+**Yapılanlar ve yapılacaklar:**
+
+- 2.3.0'daki tek dosyalık PyInstaller kurulumu 5/71 uyarı almıştı. 2.3.1'de kurulum, en yaygın Windows kurulum aracı olan Inno Setup ile hazırlanır: uyarı sayısı **5 → 3**.
+- Kurulum dosyası Microsoft'a yanlış pozitif olarak bildirilir (genellikle 1-3 günde düzelir).
+- Kod imzalama sertifikası (Certum, açık kaynak geliştirici) alındığında ajan, kurulum ve kaldırıcı imzalanıp yeniden taranacak. İmza, bu tür tahmine dayalı uyarıları en çok azaltan adımdır.
 
 ---
 
@@ -615,6 +648,7 @@ from(bucket: "secondx")
 - `influx_exporter.influx_creator(...)` fonksiyonu eski betikler için korunmuştur.
 - 2.0 → 2.1: `influx.max_buffer_points` hâlâ okunur (`max_memory_points` olarak). Sıkı mod varsayılan olarak açıktır; eski davranış için `"strict_mode": false`. Windows'ta görevi `install_windows.ps1` ile yeniden kurun (`--supervise` eklenir). Linux'ta `sudo ./install_linux.sh` yeterlidir.
 - 2.1 → 2.2: disk blokları artık `block-*.lp` (InfluxDB satır biçimi). 2.1'den kalan `block-*.jsonl` blokları da okunur ve yüklenir.
+- 2.3.0 → 2.3.1: yeni `SecondX-Setup.exe`'yi çalıştırın; ayarlar korunur, eski kaldırma kaydı yenisiyle değiştirilir.
 - 2.2 → 2.3: Windows'ta en kolay yol `SecondX-Setup.exe`'dir. Betikle kurduysanız `install_windows.ps1`'i yeniden çalıştırın: token, herkesin okuyabildiği `SECONDX_INFLUX_TOKEN` ortam değişkeninden korumalı `secondx.token` dosyasına taşınır.
 
 Ayrıntılar: [CHANGELOG.md](CHANGELOG.md)
@@ -636,7 +670,8 @@ persecc/
 ├── influx_exporter.py    # Aktarım: toplu, bloklamayan yazıcı + diske bloklu bekletme + yerel dosya
 ├── config.json           # Ajan ayarları (sır içermez)
 ├── requirements.txt
-├── packaging/windows/            # SecondX-Setup.exe: kurulum programı + derleme betiği (build.ps1)
+├── winservice.py         # Windows: ayarlar, korumalı token, zamanlanmış görev (SecondX.exe --service)
+├── packaging/windows/    # SecondX-Setup.exe: Inno Setup betiği, derleme (build.ps1) ve imzalama (sign.ps1)
 ├── run_agent.bat                 # Windows: elle çalıştırma
 ├── install_windows.ps1           # Windows: servis kurulumu
 ├── uninstall_windows.ps1
