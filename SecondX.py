@@ -46,7 +46,7 @@ import influx_exporter as ife
 import lissozis as ls
 from collector import Collector, Sample, hostname
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 BASE_DIR = Path(__file__).resolve().parent
 log = logging.getLogger("secondx")
 
@@ -96,6 +96,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_spool_mb": 1024,
         "min_free_disk_mb": 1024,
         "backlog_cpu_percent": 10,
+        "backlog_max_workers": 4,
     },
     "local_output": {
         "enabled": "auto",
@@ -123,6 +124,7 @@ NUMERIC = {
     ("influx", "spool_block_points"): int, ("influx", "max_outage_hours"): float,
     ("influx", "max_spool_mb"): float, ("influx", "min_free_disk_mb"): float,
     ("influx", "backlog_cpu_percent"): float,
+    ("influx", "backlog_max_workers"): int,
     ("local_output", "retention_days"): int,
 }
 
@@ -209,6 +211,7 @@ def load_config(path: Path) -> tuple[dict[str, Any], list[str]]:
         (cfg["influx"]["max_outage_hours"] > 0, "influx.max_outage_hours must be > 0"),
         (0 < cfg["influx"]["backlog_cpu_percent"] <= cfg["limits"]["max_cpu_percent"] / 2,
          "influx.backlog_cpu_percent must be > 0 and at most half of limits.max_cpu_percent"),
+        (1 <= cfg["influx"]["backlog_max_workers"] <= 16, "influx.backlog_max_workers must be 1-16"),
     ]
     for ok, message in checks:
         if not ok:
@@ -365,14 +368,16 @@ def make_exporter(cfg: dict[str, Any], base: Path) -> ife.Exporter | None:
     inf = cfg["influx"]
     if influx_configured(cfg):
         try:
-            sink = ife.InfluxSink(inf["url"], inf["token"], inf["org"], inf["bucket"], inf["timeout_ms"])
+            sink = ife.InfluxSink(inf["url"], inf["token"], inf["org"], inf["bucket"], inf["timeout_ms"],
+                                  connections=inf["backlog_max_workers"] + 2)
             state = "reachable" if sink.ping() else "NOT reachable yet (data is kept and retried)"
             log.info("Exporting to InfluxDB %s (org=%s, bucket=%s) - %s", sink.url, sink.org, sink.bucket, state)
             return ife.Exporter(
                 sink, max_memory_points=inf["max_memory_points"], spool_dir=_resolve(base, inf["spool_dir"]),
                 spool_block_points=inf["spool_block_points"], max_outage_seconds=inf["max_outage_hours"] * 3600,
                 max_spool_bytes=int(inf["max_spool_mb"] * 2**20), min_free_disk_bytes=int(inf["min_free_disk_mb"] * 2**20),
-                backlog_cpu_percent=inf["backlog_cpu_percent"])
+                backlog_cpu_percent=inf["backlog_cpu_percent"], backlog_max_workers=inf["backlog_max_workers"],
+                stall_seconds=max(30.0, 3 * inf["timeout_ms"] / 1000))   # a write is bounded by timeout_ms
         except ImportError:
             log.error("InfluxDB is configured but the 'influxdb-client' package is not installed for %s. "
                       "Run: \"%s\" -m pip install -r requirements.txt  - writing to local files meanwhile.",
@@ -506,8 +511,12 @@ def run_agent(cfg: dict[str, Any], notes: list[str], dry_run: bool, base: Path, 
                     log.debug("sample: %d points, cpu %.1f%%, ram %.1f%%, late %.0f ms", len(points),
                               sample.system.get("cpu_percent", 0), sample.system.get("ram_percent", 0),
                               lateness * 1000)
-                if exporter and exporter.fatal_reason:     # data-safety limits apply in every mode
-                    raise StopAgent(EXIT_EXPORT, exporter.fatal_reason)
+                if exporter:                               # data-safety checks apply in every mode
+                    if exporter.fatal_reason:
+                        raise StopAgent(EXIT_EXPORT, exporter.fatal_reason)
+                    problem = exporter.health()            # sender alive and not hanging?
+                    if problem:
+                        raise StopAgent(EXIT_ERROR, problem)
                 if strict:
                     guard.check()
                     if cycles > 1 and precision.check(lateness, time.monotonic() - started):
@@ -532,8 +541,8 @@ def run_agent(cfg: dict[str, Any], notes: list[str], dry_run: bool, base: Path, 
             if max_cycles is not None and cycles >= max_cycles:
                 break
             if time.monotonic() - last_report >= 300:
-                extra = (f", exported {exporter.written}, in RAM {exporter.pending}, spooled {exporter.spooled}"
-                         if exporter else "")
+                extra = (f", exported {exporter.written} (max delay {exporter.take_max_delay_ms():.0f} ms), "
+                         f"in RAM {exporter.pending}, spooled {exporter.spooled}" if exporter else "")
                 log.info("Status: %d samples, %d missed slots, %d errors in last 5 min%s.",
                          stats["samples"], precision.total_missed, stats["errors"], extra)
                 stats = {"samples": 0, "errors": 0}

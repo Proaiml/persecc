@@ -42,7 +42,8 @@
     "max_outage_hours": 6,
     "max_spool_mb": 1024,
     "min_free_disk_mb": 1024,
-    "backlog_cpu_percent": 10
+    "backlog_cpu_percent": 10,
+    "backlog_max_workers": 4
   },
   "local_output": {
     "enabled": "auto",

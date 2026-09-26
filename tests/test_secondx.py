@@ -81,18 +81,34 @@ class LocalSinkTest(unittest.TestCase):
             self.assertTrue(other.exists())
 
 
+def parse_lines(text):
+    """Minimal line-protocol reader for the test points (no tags, one field)."""
+    out = []
+    for line in text.splitlines():
+        if line.strip():
+            head, fields, ts = line.split(" ")
+            key, value = fields.split("=")
+            out.append({"measurement": head.split(",")[0], "tags": {}, "fields": {key: float(value)}, "time_ns": int(ts)})
+    return out
+
+
 class FlakySink:
     name = "flaky"
 
     def __init__(self, fail_times):
         self.fail_times = fail_times
         self.received = []
+        self.lock = threading.Lock()
 
     def write(self, points):
         if self.fail_times > 0:
             self.fail_times -= 1
             raise ConnectionError("down")
-        self.received.extend(points)
+        with self.lock:
+            self.received.extend(points)
+
+    def write_lines(self, text):
+        self.write(parse_lines(text))
 
     def close(self):
         pass
@@ -119,7 +135,8 @@ class SwitchSink(FlakySink):
     def write(self, points):
         if self.down:
             raise ConnectionError("influx down")
-        self.received.extend(points)
+        with self.lock:
+            self.received.extend(points)
 
 
 class ExporterTest(unittest.TestCase):
@@ -147,12 +164,12 @@ class ExporterTest(unittest.TestCase):
                            backlog_min_pause_seconds=0, min_free_disk_bytes=0)
         for k in range(30):                           # 30 "seconds" x 50 points
             exp.submit(pts(k * 50, 50))
-        self.assertTrue(wait_until(lambda: len(list(self.spool.glob("block-*.jsonl"))) >= 10))
+        self.assertTrue(wait_until(lambda: len(list(self.spool.glob("block-*.lp"))) >= 10))
         self.assertLess(exp.pending, 200)                 # RAM stays bounded
         sink.down = False
         exp._wake.set()
         self.assertTrue(wait_until(lambda: len(sink.received) == 1500))
-        self.assertEqual([], list(self.spool.glob("block-*.jsonl")))
+        self.assertEqual([], list(self.spool.glob("block-*.lp")))
         exp.close(timeout=1)
         self.assertEqual(list(range(1500)), sorted(int(p["fields"]["i"]) for p in sink.received))
         self.assertIsNone(exp.fatal_reason)
@@ -163,7 +180,7 @@ class ExporterTest(unittest.TestCase):
         exp = ife.Exporter(sink, spool_dir=self.spool, min_free_disk_bytes=0)
         exp.submit(pts(0, 250))
         exp.close(timeout=0.5)                             # "service stopped" during outage
-        self.assertTrue(list(self.spool.glob("block-*.jsonl")))
+        self.assertTrue(list(self.spool.glob("block-*.lp")))
         sink2 = SwitchSink()
         exp2 = ife.Exporter(sink2, spool_dir=self.spool, backlog_min_pause_seconds=0, min_free_disk_bytes=0)
         self.assertTrue(wait_until(lambda: len(sink2.received) == 250))
@@ -212,6 +229,149 @@ class ExporterTest(unittest.TestCase):
         self.assertLess(time.perf_counter() - t, 0.5)
         gate.set()
         exp.close(timeout=2)
+
+    def test_crashed_sender_thread_is_reported(self):
+        class Boom(BaseException):
+            pass
+
+        class Crashing(FlakySink):
+            def write(self, points):
+                raise Boom("unexpected")
+
+        exp = ife.Exporter(Crashing(0))
+        self.assertIsNone(exp.health())
+        exp.submit(pts(0, 5))
+        self.assertTrue(wait_until(lambda: exp.health() is not None))
+        self.assertIn("secondx-live thread crashed", exp.health())
+        exp.close(timeout=0.2)
+
+    def test_hanging_write_is_reported_and_its_batch_is_not_lost(self):
+        gate = threading.Event()
+        started = threading.Event()
+
+        class Hanging(FlakySink):
+            def write(self, points):
+                started.set()
+                gate.wait(10)
+
+        exp = ife.Exporter(Hanging(0), spool_dir=self.spool, stall_seconds=1, min_free_disk_bytes=0)
+        exp.submit(pts(0, 40))
+        self.assertTrue(started.wait(5))
+        self.assertIsNone(exp.health())                                  # not yet over the limit
+        self.assertTrue(wait_until(lambda: exp.health() is not None, timeout=5))
+        self.assertIn("hanging", exp.health())
+        exp.close(timeout=0.2)                                           # agent stops while the write hangs
+        saved = [p for f in sorted(self.spool.glob("block-*.lp")) for p in parse_lines(ife.Exporter._read_block(f)[0])]
+        self.assertEqual(list(range(40)), sorted(int(p["fields"]["i"]) for p in saved))
+        gate.set()
+
+    def test_corrupt_spool_block_is_set_aside_and_the_rest_is_sent(self):
+        self.spool.mkdir(parents=True)
+        (self.spool / "block-00000000000000000001-000001.jsonl").write_text('{"broken\n', encoding="utf-8")
+        legacy = self.spool / "block-00000000000000000002-000002.jsonl"          # 2.1.0 format still read
+        legacy.write_text("".join(json.dumps(p) + "\n" for p in pts(0, 10)), encoding="utf-8")
+        sink = FlakySink(0)
+        exp = ife.Exporter(sink, spool_dir=self.spool, backlog_min_pause_seconds=0, min_free_disk_bytes=0)
+        self.assertTrue(wait_until(lambda: len(sink.received) == 10))
+        exp.close(timeout=1)
+        self.assertEqual([], list(self.spool.glob("block-*.lp")))
+        self.assertEqual(1, len(list(self.spool.glob("block-*.bad"))))
+        self.assertIsNone(exp.fatal_reason)
+
+    def write_blocks(self, n, per_block=50):
+        self.spool.mkdir(parents=True, exist_ok=True)
+        for b in range(n):
+            lines = [ife.to_line(p) for p in pts(b * per_block, per_block)]
+            (self.spool / f"block-{b:020d}-{b:06d}.lp").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_backlog_is_uploaded_in_parallel_when_writes_wait_on_the_server(self):
+        self.write_blocks(40)
+
+        class SlowServer(FlakySink):                  # 50 ms per write, almost no CPU (like a remote InfluxDB)
+            def __init__(self):
+                super().__init__(0)
+                self.active = self.peak = 0
+
+            def write_lines(self, text):
+                with self.lock:
+                    self.active += 1
+                    self.peak = max(self.peak, self.active)
+                time.sleep(0.05)
+                with self.lock:
+                    self.active -= 1
+                super().write_lines(text)
+
+        sink = SlowServer()
+        exp = ife.Exporter(sink, spool_dir=self.spool, backlog_max_workers=4, min_free_disk_bytes=0)
+        self.assertTrue(wait_until(lambda: len(sink.received) == 2000, timeout=20))
+        self.assertTrue(wait_until(lambda: exp.backlog_workers == 0, timeout=5))    # workers exit when done
+        exp.close(timeout=1)
+        self.assertGreaterEqual(sink.peak, 2)                                       # scaled out
+        self.assertLessEqual(sink.peak, 4)                                          # never above the limit
+        self.assertEqual(list(range(2000)), sorted(int(p["fields"]["i"]) for p in sink.received))
+        self.assertEqual([], list(self.spool.glob("block-*")))
+
+    def test_live_data_is_not_queued_behind_the_backlog(self):
+        self.write_blocks(30)
+        gate = threading.Event()
+
+        class SlowBacklog(FlakySink):
+            def write_lines(self, text):              # backlog upload is slow ...
+                gate.wait(5)
+                super().write_lines(text)
+
+        sink = SlowBacklog(0)
+        exp = ife.Exporter(sink, spool_dir=self.spool, backlog_max_workers=1, min_free_disk_bytes=0)
+        live = [{"measurement": "live", "tags": {}, "fields": {"v": 1.0}, "time_ns": time.time_ns()}]
+        exp.submit(live)
+        # ... but the live point is written at once, while the backlog is still waiting
+        self.assertTrue(wait_until(lambda: any(p["measurement"] == "live" for p in sink.received), timeout=2))
+        self.assertEqual(1, len(sink.received))
+        gate.set()
+        self.assertTrue(wait_until(lambda: len(sink.received) == 1 + 30 * 50, timeout=20))
+        exp.close(timeout=1)
+
+    def test_rejected_block_is_kept_aside_and_does_not_block_the_queue(self):
+        self.write_blocks(3)
+
+        class Picky(FlakySink):
+            def write_lines(self, text):
+                if text.startswith("m i=50.0"):       # second block: the server refuses its content
+                    raise ife.Rejected("HTTP 400: field type conflict")
+                super().write_lines(text)
+
+        sink = Picky(0)
+        exp = ife.Exporter(sink, spool_dir=self.spool, min_free_disk_bytes=0)
+        self.assertTrue(wait_until(lambda: len(sink.received) == 100))
+        self.assertTrue(wait_until(lambda: exp.spool_bytes() == 0))
+        exp.close(timeout=1)
+        self.assertEqual(1, len(list(self.spool.glob("block-*.rejected"))))
+        self.assertIsNone(exp.fatal_reason)
+
+    def test_sink_without_line_protocol_cannot_use_a_spool(self):
+        class DictOnly:
+            name = "dict-only"
+
+            def write(self, points):
+                pass
+
+            def close(self):
+                pass
+
+        with self.assertRaises(TypeError):
+            ife.Exporter(DictOnly(), spool_dir=self.spool)
+
+    def test_delivery_delay_is_measured(self):
+        sink = FlakySink(0)
+        exp = ife.Exporter(sink)
+        now = time.time_ns()
+        exp.submit([{"measurement": "m", "tags": {}, "fields": {"v": 1.0}, "time_ns": now}])
+        self.assertTrue(wait_until(lambda: len(sink.received) == 1))
+        delay = exp.take_max_delay_ms()
+        self.assertGreaterEqual(delay, 0)
+        self.assertLess(delay, 1000)
+        self.assertEqual(0.0, exp.take_max_delay_ms())                   # window resets
+        exp.close(timeout=1)
 
     def test_legacy_influx_creator(self):
         self.assertFalse(ife.influx_creator("o", "b", "t", "f", "p", "34", 1))
@@ -352,14 +512,26 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(sx.EXIT_RESOURCE, code)
 
     def test_export_safety_limit_stops_agent_even_when_not_strict(self):
-        exp = SimpleNamespace(fatal_reason=None, written=0, pending=0, spooled=0, close=lambda timeout: None)
+        exp = self.fake_exporter()
         exp.submit = lambda points: setattr(exp, "fatal_reason", "RAM buffer full")
+        self.assertEqual(sx.EXIT_EXPORT, self.run_with_exporter(exp))
+
+    def test_dead_or_hanging_sender_stops_agent_even_when_not_strict(self):
+        exp = self.fake_exporter()
+        exp.submit = lambda points: setattr(exp, "health", lambda: "secondx-live thread stopped unexpectedly")
+        self.assertEqual(sx.EXIT_ERROR, self.run_with_exporter(exp))       # restartable
+
+    @staticmethod
+    def fake_exporter():
+        return SimpleNamespace(fatal_reason=None, written=0, pending=0, spooled=0, close=lambda timeout: None,
+                               health=lambda: None, take_max_delay_ms=lambda: 0.0)
+
+    def run_with_exporter(self, exp):
         cfg = self.cfg(strict_mode=False)
         with mock.patch.object(sx, "make_exporter", return_value=exp):
-            code = sx.run_agent(cfg, [], False, Path(tempfile.gettempdir()), collector=BrokenCollector(fail_on=99),
+            return sx.run_agent(cfg, [], False, Path(tempfile.gettempdir()), collector=BrokenCollector(fail_on=99),
                                 resource_guard=sx.ResourceGuard(cfg["limits"], 0.2, FakeProc(), Clock()),
                                 max_cycles=5)
-        self.assertEqual(sx.EXIT_EXPORT, code)
 
 
 class SupervisorTest(unittest.TestCase):

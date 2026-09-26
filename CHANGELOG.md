@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.2.0 - 2026-09-26
+
+Faster, safer export: live data first, parallel catch-up, and a sender that is watched every second.
+
+### Added
+- **Live data is never queued behind a backlog.** A dedicated live sender writes new samples immediately; spooled blocks are uploaded by separate workers.
+- **Parallel catch-up:** `secondx-upload-N` workers start when blocks are waiting and scale out (one per second, up to `influx.backlog_max_workers`, default 4) while uploads mostly wait on the server; they exit when the backlog is gone. All workers share one CPU budget (`backlog_cpu_percent`). 24 h of backlog (2.16 M points): 46.5 s with 1 worker, 33.2 s with 4 against a local InfluxDB.
+- **Sender liveness:** the agent checks every second that the export threads are alive and that no single write hangs longer than `max(30 s, 3 × timeout_ms)`; otherwise it stops with code 1 (restartable).
+- **Delivery delay** (sample → written) is reported in the 5-minute status line.
+- Blocks InfluxDB refuses (HTTP 400/422) are kept as `*.rejected`, unreadable blocks as `*.bad`; neither blocks the queue.
+
+### Changed
+- Spool blocks are stored as InfluxDB line protocol (`block-*.lp`), so uploading needs no conversion: 6.6 ms → ~0 ms CPU per 1500-point block; 6 h of backlog uploads in 6.4 s instead of 110 s. `block-*.jsonl` blocks from 2.1.0 are still read.
+- The InfluxDB client keeps a keep-alive connection pool sized for the live sender and the upload workers.
+- On shutdown, a batch whose write is still in progress is also saved to the spool (a duplicate write is harmless in InfluxDB, a lost one is not).
+
 ## 2.1.0 - 2026-09-26
 
 Strict mode: the agent either runs with second-level precision without disturbing the host, or stops immediately. Built for critical servers.

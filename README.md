@@ -91,9 +91,10 @@ flowchart TD
 
     subgraph P["Arka plan: ölçüm döngüsüyle aynı anda çalışır"]
         direction TB
-        SN["Gönderici iş parçacığı<br/>tampondaki noktaları hemen yazar<br/>önce diskte bekleyen bloklar"] --> I[("InfluxDB")]
-        SN -. "InfluxDB yanıt vermezse" .-> SP["Diske yazıcı iş parçacığı<br/>1500 noktalık bloklar: spool/"]
-        SP -. "bağlantı gelince" .-> SN
+        SN["Canlı gönderici<br/>yeni noktaları hemen yazar<br/>eski verinin arkasında beklemez"] --> I[("InfluxDB")]
+        SN -. "InfluxDB yanıt vermezse" .-> SP["Diske yazıcı<br/>1500 noktalık bloklar: spool/"]
+        SP -. "bağlantı gelince" .-> UW["Yükleme işçileri 1-4<br/>gerektikçe açılır, iş bitince kapanır<br/>ortak CPU bütçesi %10"]
+        UW --> I
     end
     Q == "her saniye" ==> SN
 
@@ -110,10 +111,10 @@ flowchart TD
     classDef arka fill:#e3eefc,stroke:#1f5fa8,color:#000
     class C1,C2,C3,C4,C5,K dur
     class W tamam
-    class SN,SP,I arka
+    class SN,SP,UW,I arka
 ```
 
-Ölçüm döngüsü InfluxDB'ye kendisi yazmaz: noktaları RAM tamponuna koyar ve **aynı anda çalışan** gönderici iş parçacığını uyandırır. Gönderici noktaları hemen (normalde milisaniyeler içinde, bir sonraki saniye gelmeden) InfluxDB'ye yazar. Böylece InfluxDB yavaşlasa ya da kapansa bile ölçüm döngüsü hiç beklemez ve saniyelik ritim bozulmaz. Mavi kutular bu arka plan işidir. Kırmızı kutular ajanın durduğu noktalardır. Kod 1 ve 5 geçici sorunlardır: 5 dk arayla en fazla 5 kez yeniden denenir. Kod 2, 3 ve 4 bir yöneticinin bakmasını gerektirir: ajan kendiliğinden yeniden başlamaz. Ayrıntılar: [Sıkı mod](#-sıkı-mod-kritik-sunucular-için).
+Ölçüm döngüsü InfluxDB'ye kendisi yazmaz: noktaları RAM tamponuna koyar ve **aynı anda çalışan** canlı göndericiyi uyandırır. Canlı gönderici noktaları hemen (normalde milisaniyeler içinde, bir sonraki saniye gelmeden) InfluxDB'ye yazar. Böylece InfluxDB yavaşlasa, donsa ya da kapansa bile ölçüm döngüsü hiç beklemez ve saniyelik ritim bozulmaz. Kesintiden kalan veriyi ayrı yükleme işçileri gönderir; canlı veri onların arkasında sıraya girmez. Mavi kutular bu arka plan işidir. Kırmızı kutular ajanın durduğu noktalardır. Kod 1 ve 5 geçici sorunlardır: 5 dk arayla en fazla 5 kez yeniden denenir. Kod 2, 3 ve 4 bir yöneticinin bakmasını gerektirir: ajan kendiliğinden yeniden başlamaz. Ayrıntılar: [Sıkı mod](#-sıkı-mod-kritik-sunucular-için).
 
 ---
 
@@ -127,7 +128,7 @@ python SecondX.py --once
 ```
 
 ```
-SecondX 2.1.0 | host WEB-01 | interval 1.00s
+SecondX 2.2.0 | host WEB-01 | interval 1.00s
 CPU   7.6%   RAM  77.4% (24.7 GB)   Disk R/W    108.7 /    164.6 KB/s   Net out/in      0.6 /      1.1 KB/s
 
 Top cpu (%):
@@ -259,27 +260,34 @@ Politika `config.json` → `restart` bölümündedir: `max_attempts: 5`, `delay_
 ```mermaid
 flowchart LR
     A["Ölçüm döngüsü<br/>(her 1 sn, asla beklemez)"] --> R["RAM tamponu<br/>(en fazla 30 000 nokta)"]
-    R -->|"gönderici iş parçacığı"| I[("InfluxDB")]
-    R -->|"kesintide: diske yazıcı iş parçacığı<br/>1500 noktalık bloklar"| D["spool/block-*.jsonl"]
-    D -->|"bağlantı gelince<br/>en eski blok önce"| I
+    R -->|"canlı gönderici"| I[("InfluxDB")]
+    R -->|"kesintide: diske yazıcı<br/>1500 noktalık bloklar"| D["spool/block-*.lp<br/>(hazır InfluxDB biçimi)"]
+    D -->|"bağlantı gelince<br/>1-4 paralel yükleme işçisi"| I
 ```
 
 1. Ölçüm döngüsü noktaları yalnızca RAM tamponuna ekler; ağı ya da diski **hiç** beklemez. Saniyelik ritim bu yüzden bozulmaz.
-2. InfluxDB yanıt vermezse **ayrı bir iş parçacığı** en eski noktaları 1500'lük bloklar halinde diske yazar (`fsync` + atomik ad değiştirme; yarım kalmış blok olmaz). RAM kullanımı sabit kalır: testte 45 sn kesintide ajan 60 MB'ta kaldı.
-3. Bağlantı gelince önce diskteki bloklar (en eskiden yeniye), sonra RAM'deki noktalar **orijinal zaman damgalarıyla** gönderilir. Panoda boşluk kalmaz.
-4. Birikmiş veri gönderilirken ajan hızını kendi CPU süresine göre ayarlar (`backlog_cpu_percent: 10`). Saatlerce biriken veri, sunucuyu yormadan arka planda eritilir.
-5. Ajan kesinti sırasında durdurulursa (servis durdurma, yeniden başlatma) RAM'deki noktalar da diske yazılır ve bir sonraki açılışta gönderilir.
+2. InfluxDB yanıt vermezse **ayrı bir iş parçacığı** en eski noktaları 1500'lük bloklar halinde diske yazar (`fsync` + atomik ad değiştirme; yarım kalmış blok olmaz). Bloklar doğrudan InfluxDB'nin satır biçimindedir: gönderirken dönüştürme gerekmez (blok başına CPU 6.6 ms → ~0). RAM kullanımı sabit kalır: testte 45 sn kesintide ajan 60 MB'ta kaldı.
+3. Bağlantı gelince **canlı veri hemen** gönderilir; diskteki birikmiş bloklar onu bekletmez. Birikmiş blokları ayrı **yükleme işçileri** gönderir, hepsi **orijinal zaman damgalarıyla**. Panoda boşluk kalmaz.
+4. Yükleme işçileri gerektikçe açılır: gönderim süresinin çoğu sunucunun yanıtını beklemekle geçiyorsa (uzak InfluxDB), saniyede bir işçi eklenir, en fazla `backlog_max_workers` (4). Beklerken Python kilidi (GIL) serbest kalır; paralellik ölçüm döngüsünden zaman çalmaz. İş bitince işçiler kapanır. Hepsi **tek bir ortak CPU bütçesi** (`backlog_cpu_percent: 10`) içinde kalır.
+5. InfluxDB'nin kesin olarak reddettiği bir blok (HTTP 400) `*.rejected`, okunamayan bir blok `*.bad` olarak kenara alınır ve incelemeye bırakılır. Kuyruk tek bir bozuk blok yüzünden takılmaz.
+6. Ajan kesinti sırasında durdurulursa (servis durdurma, yeniden başlatma) RAM'deki noktalar ve o an yazılmakta olan paket de diske yazılır ve bir sonraki açılışta gönderilir. Aynı noktanın iki kez yazılması InfluxDB'de zararsızdır (üzerine yazar); kaybolması ise kabul edilemez.
+
+**Gönderici her zaman canlı mı?** Ölçüm döngüsü her saniye arka plan iş parçacıklarını da denetler. Biri çökerse ya da tek bir yazma işlemi 30 sn'den uzun asılı kalırsa (normalde `timeout_ms` = 5 sn ile sınırlı) ajan kod 1 ile durur ve 5 dk sonra temiz bir bağlantıyla yeniden başlatılır. InfluxDB bağlantısı açık tutulur (keep-alive havuzu): her saniye yeniden bağlantı kurma gecikmesi olmaz. Durum satırı 5 dakikada bir en kötü teslim gecikmesini de yazar (`max delay ... ms`).
 
 ### Ölçülen ayak izi (Windows 11, gerçek InfluxDB 2.7)
 
 | Senaryo | Sonuç |
 | :--- | :--- |
-| Normal çalışma | CPU ortalama **%2.8**, en yüksek %6.2 (tek çekirdeğin %'si) · RAM **59 MB** |
+| Normal çalışma | CPU ortalama **%1.8**, en yüksek %4.7 (tek çekirdeğin %'si) · RAM **59 MB** |
 | 45 sn InfluxDB kesintisi | 3 blok diske yazıldı · RAM en yüksek 60 MB · kesinti sonrası **boşluksuz** toparlandı |
 | Kesinti sınırı aşıldı | Ajan kendiliğinden durdu (kod 4) · bekleyen veri diskte kaldı, yeniden başlayınca gönderildi |
-| 6 saatlik birikmiş veri (540 000 nokta) | 110 sn'de gönderildi · CPU 3 sn ortalaması en yüksek **%17** (sınır 25) · RAM 63 MB |
+| InfluxDB 60 sn **dondu** (bağlantı açık, yanıt yok) | Ölçüm hiç aksamadı: 112 sn'de 112 örnek, aralık 979-1016 ms · veri diske gitti, çözülünce eksiksiz yüklendi |
+| 6 saatlik birikmiş veri (540 000 nokta) | **6.4 sn**'de yüklendi (2.1'de 110 sn) · RAM 62 MB |
+| 24 saatlik birikmiş veri (2 160 000 nokta) | 1 işçi 46.5 sn, 4 işçi **33.2 sn** · CPU ortalama %13.5, 3 sn en yüksek %16.9 (sınır 25) · yükleme sırasında canlı veri en fazla 1 sn geride · ölçüm ritmi 1000 ms'den en fazla 19 ms saptı, **eksik saniye yok** |
 | RAM sınırı 50 MB'a düşürüldü | Ajan **1.2 sn** içinde durdu (kod 3) · gözetmen yeniden başlatmadı |
 | Gözetmen sert biçimde öldürüldü | Ajan 1.2 sn içinde kendiliğinden kapandı |
+
+> ℹ️ Testteki InfluxDB aynı bilgisayarda çalıştığı için yükleme hızını sunucunun kendi yazma hızı sınırlar. Ağ gecikmesi olan uzak bir InfluxDB'de paralel işçilerin kazancı daha büyüktür.
 
 > ℹ️ `strict_mode: false` yapılırsa ajan hatalarda durmaz, günlüğe yazıp devam eder ve geride kalırsa sessizce yeniden hizalanır. Diske bekletme ve güvenlik sınırları bu modda da geçerlidir. Kritik sunucular için önerilmez.
 
@@ -315,7 +323,8 @@ flowchart LR
     "max_outage_hours": 6,
     "max_spool_mb": 1024,
     "min_free_disk_mb": 1024,
-    "backlog_cpu_percent": 10
+    "backlog_cpu_percent": 10,
+    "backlog_max_workers": 4
   },
   "local_output": { "enabled": "auto", "dir": "data", "retention_days": 14 }
 }
@@ -343,7 +352,8 @@ flowchart LR
 | `influx.max_outage_hours` | `6` | Bu süreden uzun kesintide ajan durur (kod 4) |
 | `influx.max_spool_mb` | `1024` | Diskteki bekleyen verinin üst sınırı |
 | `influx.min_free_disk_mb` | `1024` | Diskte en az bu kadar boş yer bırakılır |
-| `influx.backlog_cpu_percent` | `10` | Birikmiş veri gönderilirken kullanılacak CPU (tek çekirdeğin %'si). `max_cpu_percent`'in yarısını geçemez |
+| `influx.backlog_cpu_percent` | `10` | Birikmiş veri yüklenirken tüm yükleme işçilerinin **toplam** CPU bütçesi (tek çekirdeğin %'si). `max_cpu_percent`'in yarısını geçemez |
+| `influx.backlog_max_workers` | `4` | Birikmiş veri için en fazla paralel yükleme işçisi (1-16). Gerektikçe açılır, iş bitince kapanır |
 | `local_output.enabled` | `auto` | Token yoksa `data/metrics-GÜN.jsonl` dosyalarına yaz |
 
 **Ortam değişkenleri** config dosyasını geçersiz kılar. Token'ı dosyada tutmamak için önerilen yol budur:
@@ -455,6 +465,7 @@ from(bucket: "secondx")
 - Veri şeması değişti: `Custom_scripts` / `EX134*` alanlarının yerine [`secondx_system` ve `secondx_process`](#-veri-şeması) geldi. Eski panolar yeni ölçümlere göre güncellenmeli. Hazır pano yeni şemayı kullanır.
 - `influx_exporter.influx_creator(...)` fonksiyonu eski betikler için korunmuştur.
 - 2.0 → 2.1: `influx.max_buffer_points` hâlâ okunur (`max_memory_points` olarak). Sıkı mod varsayılan olarak açıktır; eski davranış için `"strict_mode": false`. Windows'ta görevi `install_windows.ps1` ile yeniden kurun (`--supervise` eklenir). Linux'ta `sudo ./install_linux.sh` yeterlidir.
+- 2.1 → 2.2: disk blokları artık `block-*.lp` (InfluxDB satır biçimi). 2.1'den kalan `block-*.jsonl` blokları da okunur ve yüklenir.
 
 Ayrıntılar: [CHANGELOG.md](CHANGELOG.md)
 
