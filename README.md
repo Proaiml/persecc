@@ -72,6 +72,40 @@ flowchart LR
 
 > ℹ️ İşletim sistemleri süreç başına ağ trafiği sayacı sunmaz; ağ bu yüzden sistem genelinde ölçülür.
 
+### Akış diyagramı: her saniye ne olur?
+
+```mermaid
+flowchart TD
+    S(["Servis başlar<br/>Windows: --supervise · Linux: systemd"]) --> Y{"config.json geçerli mi?"}
+    Y -->|hayır| C2["Dur · kod 2<br/>yapılandırma hatası"]
+    Y -->|evet| O["Diskte önceki kesintiden blok varsa<br/>arka planda önce onlar gönderilir"]
+    O --> T["Saniye başı: ölçüm al<br/>sistem + en çok tüketen N süreç"]
+    T --> Q["Noktaları RAM tamponuna ekle<br/>ağı ve diski asla beklemez"]
+    T -. "beklenmedik hata" .-> C1["Dur · kod 1<br/>hata"]
+    Q --> G1{"Dışa aktarım güvenlik sınırı?<br/>kesinti > 6 sa · spool > 1 GB<br/>boş disk < 1 GB · RAM tamponu dolu"}
+    G1 -->|evet| C4["Dur · kod 4<br/>veri diskte kalır"]
+    G1 -->|hayır| G2{"Kendi kaynağı aşıldı mı?<br/>RAM > 200 MB<br/>CPU 3 sn ort. > %25"}
+    G2 -->|evet| C3["Dur · kod 3<br/>kaynak sınırı"]
+    G2 -->|hayır| G3{"Art arda 3 ölçüm<br/>500 ms'den fazla geç mi?"}
+    G3 -->|evet| C5["Dur · kod 5<br/>hassasiyet kaybı"]
+    G3 -->|hayır| W["Bir sonraki saniyeyi bekle"] --> T
+
+    C1 --> R{"5 yeniden deneme<br/>doldu mu?"}
+    C5 --> R
+    R -->|hayır| B["5 dk bekle"] --> S
+    R -->|evet| K(["Kapalı kalır<br/>yönetici bakmalı"])
+    C2 --> K
+    C3 --> K
+    C4 --> K
+
+    classDef dur fill:#fde2e2,stroke:#c0392b,color:#000
+    classDef tamam fill:#e3f4e1,stroke:#2e7d32,color:#000
+    class C1,C2,C3,C4,C5,K dur
+    class W tamam
+```
+
+Kırmızı kutular ajanın durduğu noktalardır. Kod 1 ve 5 geçici sorunlardır: 5 dk arayla en fazla 5 kez yeniden denenir. Kod 2, 3 ve 4 bir yöneticinin bakmasını gerektirir: ajan kendiliğinden yeniden başlamaz. Ayrıntılar: [Sıkı mod](#-sıkı-mod-kritik-sunucular-için).
+
 ---
 
 ## ⚡ 1 dakikada deneyin
