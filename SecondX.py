@@ -354,7 +354,7 @@ def build_points(sample: Sample, cfg: dict[str, Any]) -> list[dict[str, Any]]:
     points = [{"measurement": "secondx_system", "tags": {"host": host},
                "fields": dict(sample.system), "time_ns": sample.timestamp_ns}]
     for metric, values in sample.processes.items():
-        for rank, (name, value) in enumerate(ls.top(values, cfg["top_n"], cfg["exclude_processes"]), 1):
+        for rank, name, value in ls.ranked(values, cfg["top_n"], cfg["exclude_processes"]):
             points.append({"measurement": "secondx_process",
                            "tags": {"host": host, "metric": metric, "process": name, "rank": str(rank)},
                            "fields": {"value": value}, "time_ns": sample.timestamp_ns})
@@ -399,11 +399,11 @@ def print_table(sample: Sample, cfg: dict[str, Any]) -> None:
           f"{s.get('disk_write_kbps', 0):8.1f} KB/s   Net out/in {s.get('net_sent_kbps', 0):8.1f} / "
           f"{s.get('net_recv_kbps', 0):8.1f} KB/s")
     for metric, values in sample.processes.items():
-        ranked = ls.top(values, cfg["top_n"], cfg["exclude_processes"])
+        ranked = ls.ranked(values, cfg["top_n"], cfg["exclude_processes"])
         print(f"\nTop {metric} ({UNITS[metric]}):")
         if not ranked:
             print("  (no activity)")
-        for rank, (name, value) in enumerate(ranked, 1):
+        for rank, name, value in ranked:
             print(f"  {rank}. {name:<40} {value:10.2f}")
     print()
 

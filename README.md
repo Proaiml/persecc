@@ -390,6 +390,12 @@ python SecondX.py --config /yol/config.json
 | :--- | :--- |
 | `host`, `metric` (`cpu` \| `ram` \| `disk_read` \| `disk_write`), `process`, `rank` (1..N) | `value` (float) |
 
+**Eşit tüketim:** iki süreç tam olarak aynı değeri ölçerse (Windows CPU süresini saat tıkları halinde saydığı için küçük süreçlerde sık görülür, ör. 4 süreç birden `%0.233`):
+
+- aynı `rank` değerini alırlar (1, 2, 2, 4 ...). Biri diğerinin "önünde" gösterilmez;
+- N. sıradakiyle eşit olanların **hepsi** listeye girer, hiçbiri rastgele dışarıda kalmaz (en fazla 2N süreç);
+- eşitler kendi içinde alfabetik sıralanır. Sonuç, işletim sisteminin süreçleri listeleme sırasına bağlı değildir.
+
 Örnek Flux sorgusu, son 5 dakikada en çok disk yazan süreçler:
 
 ```flux

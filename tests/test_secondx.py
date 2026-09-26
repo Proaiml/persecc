@@ -30,6 +30,28 @@ class RankingTest(unittest.TestCase):
         self.assertEqual([("chrome.exe", 3.5)], ls.top(data, 1, ["system idle process"]))
         self.assertEqual([("chrome.exe", 3.5), ("python.exe", 2.0)], ls.top(data, 6, ["System Idle Process"]))
 
+    def test_equal_values_share_rank_and_are_not_dropped_at_the_cutoff(self):
+        # Real Windows sample: CPU time is counted in clock ticks, so several processes show 0.233 %.
+        data = {"chrome.exe": 5.78, "Taskmgr.exe": 0.47, "audiodg.exe": 0.37, "DCv2.exe": 0.33,
+                "pycharm64.exe": 0.233, "claude.exe": 0.233, "lghub_agent.exe": 0.233, "SnippingTool.exe": 0.233,
+                "tiny.exe": 0.1}
+        self.assertEqual([(1, "chrome.exe", 5.78), (2, "Taskmgr.exe", 0.47), (3, "audiodg.exe", 0.37),
+                          (4, "DCv2.exe", 0.33), (5, "claude.exe", 0.233), (5, "lghub_agent.exe", 0.233),
+                          (5, "pycharm64.exe", 0.233), (5, "SnippingTool.exe", 0.233)], ls.ranked(data, 6))
+
+    def test_ties_do_not_depend_on_the_order_the_os_lists_processes(self):
+        a = {"x.exe": 1.0, "b.exe": 2.0, "a.exe": 2.0, "c.exe": 2.0}
+        b = dict(reversed(list(a.items())))
+        self.assertEqual(ls.ranked(a, 2), ls.ranked(b, 2))
+        self.assertEqual([(1, "a.exe", 2.0), (1, "b.exe", 2.0), (1, "c.exe", 2.0)], ls.ranked(a, 2))
+
+    def test_large_tie_is_capped(self):
+        data = {f"p{i:02d}.exe": 1.0 for i in range(50)}
+        out = ls.ranked(data, 6)
+        self.assertEqual(12, len(out))                              # at most 2 x top_n
+        self.assertEqual({1}, {rank for rank, _, _ in out})
+        self.assertEqual(6, len(ls.ranked(data, 6, max_ties=0)))
+
 
 class LineProtocolTest(unittest.TestCase):
     def test_escaping_and_format(self):

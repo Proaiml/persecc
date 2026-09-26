@@ -14,6 +14,10 @@ Strict mode: the agent either runs with second-level precision without disturbin
 - **Supervisor** (`--supervise`, used by the Windows task): restarts on codes 1 and 5 at most `restart.max_attempts` times, `delay_seconds` apart; never restarts on 0, 2, 3, 4. The agent exits by itself if the supervisor is killed.
 - systemd unit: `Restart=on-failure`, `RestartSec=300`, start limit, `RestartPreventExitStatus=2 3 4`, and kernel backstops `MemoryMax=400M`, `CPUQuota=50%`.
 
+### Fixed
+- **Processes with equal values were ranked arbitrarily.** Windows counts CPU time in clock ticks, so small processes often measure exactly the same value (on a test machine the 6th and 7th CPU consumers were tied in 11 of 30 samples). Which one made the top N, and which got the better rank, depended on the order the OS listed processes and changed every second. Now equal values share a rank (1, 2, 2, 4), everything tied with the N-th entry is included (at most 2N), and ties are ordered alphabetically (`lissozis.ranked`).
+- In non-strict mode the export safety limits were not checked, so the RAM buffer could grow without bound; they now apply in every mode.
+
 ### Changed
 - `influx.max_buffer_points` is replaced by `influx.max_memory_points` (old key still accepted). Points are never silently dropped any more.
 - Status line reports missed slots and spooled points.
