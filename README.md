@@ -24,7 +24,7 @@
 - [Yapılandırma](#%EF%B8%8F-yapılandırma)
 - [Grafana panosu](#-grafana-panosu)
 - [Veri şeması](#-veri-şeması)
-- [İşletim ve güvenlik](#%EF%B8%8F-işletim-ve-güvenlik)
+- [İşletim ve güvenlik](#%EF%B8%8F-i%CC%87%C5%9Fletim-ve-g%C3%BCvenlik)
 - [Sorun giderme](#-sorun-giderme)
 - [1.x'ten yükseltme](#-1xten-yükseltme)
 - [Geliştirme ve testler](#-geliştirme-ve-testler)
