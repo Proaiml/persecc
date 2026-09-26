@@ -10,7 +10,7 @@
 
 > Geleneksel izleme araçları (CloudWatch, Datadog, varsayılan Prometheus döngüleri) metrikleri **1-5 dakikalık** ortalamalarla toplar. Birkaç saniyelik CPU kilitlenmeleri, anlık disk patlamaları ve belleği hızla tüketen süreçler bu ortalamaların içinde kaybolur. SecondX bunları **saniyesinde ve süreç adıyla** gösterir.
 
-> 🔒 **Temel ilke: izlenen sunucuya asla yük olmamak.** SecondX kritik sunucularda (ör. banka / mobil uygulama sunucuları) çalışacak şekilde tasarlandı. Kendisine ayrılan CPU veya RAM sınırını aştığı **anda durur**. Saniyelik hassasiyeti kaybederse durur. InfluxDB uzun süre kapalı kalırsa belleği şişirmez: veriyi diske bloklar halinde yazar ve belirlenen sınırlar aşılırsa durur. Ayrıntılar: [Sıkı mod](#-sıkı-mod-kritik-sunucular-için).
+> 🔒 **Temel ilke: izlenen sunucuya asla yük olmamak.** SecondX önemli sunucularda çalışacak şekilde tasarlandı. Kendisine ayrılan CPU veya RAM sınırını aştığı **anda durur**. Saniyelik hassasiyeti kaybederse durur. InfluxDB uzun süre kapalı kalırsa belleği şişirmez: veriyi diske bloklar halinde yazar ve belirlenen sınırlar aşılırsa durur. Ayrıntılar: [Sıkı mod](#-sıkı-mod-kritik-sunucular-için).
 
 ---
 
