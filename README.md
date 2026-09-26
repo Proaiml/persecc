@@ -16,7 +16,7 @@
 
 ## 📑 İçindekiler
 
-- [Kurumunuz için güven özeti](#%EF%B8%8F-kurumunuz-için-güven-özeti)
+- [Güvenlik özeti](#-güvenlik-özeti)
 - [Öne çıkanlar](#-öne-çıkanlar)
 - [Nasıl çalışır?](#%EF%B8%8F-nasıl-çalışır)
 - [1 dakikada deneyin](#-1-dakikada-deneyin)
@@ -37,7 +37,7 @@
 
 ---
 
-## 🏛️ Kurumunuz için güven özeti
+## 🔐 Güvenlik özeti
 
 Bir izleme ajanını üretim sunucusuna kurmadan önce sorulması gereken soruların kısa cevapları. Her cevap koddan ve testlerden doğrulanabilir.
 
@@ -68,7 +68,7 @@ Bir izleme ajanını üretim sunucusuna kurmadan önce sorulması gereken sorula
 | 🚀 **Toplu yazım** | Her saniyenin tüm noktaları tek istekte gönderilir; ölçüm döngüsü asla ağı beklemez. |
 | 🖥️ **Çoklu sunucu** | Her nokta `host` etiketi taşır. Tüm sunucular tek bucket'ta, panoda sunucu seçiciyle izlenir. |
 | 📊 **Hazır pano** | `docker compose up -d` → Grafana'da veri kaynağı ve pano otomatik kurulu gelir. |
-| 🔐 **Kurumsal kurulum** | Windows: tek dosyalık `SecondX-Setup.exe` (Python gerekmez, sessiz kurulum desteği, "Uygulamalar"dan kaldırma). Linux: root olmayan kullanıcı + güvenlik sıkılaştırmalı systemd servisi. Token yalnızca yöneticilerin açabildiği dosyada. |
+| 📦 **Kolay ve güvenli kurulum** | Windows: tek dosyalık `SecondX-Setup.exe` (Python gerekmez, sessiz kurulum desteği, "Uygulamalar"dan kaldırma). Linux: root olmayan kullanıcı + güvenlik sıkılaştırmalı systemd servisi. Token yalnızca yöneticilerin açabildiği dosyada. |
 | 🗂️ **InfluxDB'siz mod** | Token girilmezse metrikler günlük JSON-lines dosyalarına yazılır (otomatik saklama süresiyle). |
 
 ---
@@ -210,7 +210,7 @@ flowchart LR
 
 ```powershell
 # InfluxDB'ye yazan kurulum (token'ı dosyadan okur)
-SecondX-Setup.exe --quiet --url http://influx.kurum.local:8086 --org secondx --bucket secondx --token-file \\paylasim\secondx.token
+SecondX-Setup.exe --quiet --url http://influx.local:8086 --org secondx --bucket secondx --token-file \\paylasim\secondx.token
 # Yalnızca yerel dosyaya yazan kurulum
 SecondX-Setup.exe --quiet --local
 # Kaldırma (ayarları korumak için --keep-data)
@@ -219,7 +219,7 @@ SecondX-Setup.exe --uninstall --quiet
 
 > ⚠️ `--token` seçeneği de vardır, ancak komut satırları süreç listesinde diğer kullanıcılara görünebilir. Toplu dağıtımda `--token-file` kullanın.
 
-**Windows SmartScreen / antivirüs uyarısı:** `SecondX-Setup.exe` dijital imzalı değildir. Windows "Windows kişisel bilgisayarınızı korudu" diyebilir: **Ek bilgi → Yine de çalıştır**. Kurumunuz imzasız dosyalara izin vermiyorsa iki yol vardır:
+**Windows SmartScreen / antivirüs uyarısı:** `SecondX-Setup.exe` dijital imzalı değildir. Windows "Windows kişisel bilgisayarınızı korudu" diyebilir: **Ek bilgi → Yine de çalıştır**. Sisteminiz imzasız dosyalara izin vermiyorsa iki yol vardır:
 
 - Dosyayı SHA256 değeriyle güvenilir listeye alın.
 - Kurulum dosyasını **kaynaktan kendiniz derleyin** (temiz bir sanal ortam kurar, yalnızca `requirements.txt` ve PyInstaller'ı kullanır):
@@ -379,7 +379,7 @@ flowchart LR
 
 Bir sunucuda olabilecek tüm olaylar, ajanın her birine tepkisi ve sizin yapmanız gerekenler.
 
-- **Yıllık olasılık:** tipik bir kurum sunucusu için mühendislik tahminidir; kendi ortamınıza göre değişir. Ölçülmüş değerler ayrıca belirtilmiştir.
+- **Yıllık olasılık:** tipik bir üretim sunucusu için mühendislik tahminidir; kendi ortamınıza göre değişir. Ölçülmüş değerler ayrıca belirtilmiştir.
 - **Veri korunumu:** o olay sırasında ölçülen verinin yüzde kaçının sonunda InfluxDB'ye ulaştığı. ✓ = gerçek InfluxDB ile ya da otomatik testle doğrulandı.
 
 ### InfluxDB ve ağ
@@ -416,7 +416,7 @@ Bir sunucuda olabilecek tüm olaylar, ajanın her birine tepkisi ve sizin yapman
 | 18 | Görev / gözetmen zorla sonlandırılır | %2 | Ajan ~1 sn içinde kendiliğinden kapanır, sahipsiz süreç kalmaz ✓ | Sonlandırmadan sonrası ölçülmez | Görevi yeniden başlatın |
 | 19 | Yapılandırma hatası | %5 (kurulumda) | Kurulumdaki bağlantı denemesi yakalar; çalışırken ajan başlamaz (kod 2) | | Günlükte belirtilen satırı düzeltin |
 
-### Kurum ortamı
+### Çalışma ortamı
 
 | # | Olay | Yıllık olasılık | Ajanın tepkisi | Sizin yapmanız gereken |
 | :-: | :--- | :-: | :--- | :--- |

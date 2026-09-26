@@ -6,7 +6,7 @@
      Program Files, nothing is unpacked to TEMP at every start.
   2. The agent folder is zipped and embedded in SecondX-Setup.exe (onefile, asks for admin rights).
   3. dist\SHA256SUMS.txt lets anyone verify the downloaded file.
-  Organisations that do not want to run a downloaded binary can build their own copy with it.
+  Anyone who prefers not to run a downloaded binary can build their own copy with it.
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 #>
